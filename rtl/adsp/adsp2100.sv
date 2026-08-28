@@ -83,11 +83,14 @@ module adsp2100 (
     // ---------------------------------------------------------------------
     // Memories
     // ---------------------------------------------------------------------
-    // Intel's true-dual-port template (one always block, same-port
-    // read-during-write returns the new data, cross-port is don't-care).
-    // Quartus 18.1 refuses to infer M10K from the two-block form.
-    (* ramstyle = "M10K" *) logic [23:0] pmem [8192];
-    (* ramstyle = "M10K" *) logic [15:0] dmem [8192];
+    // Two independent ports; the 68010's ext port is only ever used while the
+    // ADSP is halted, so it never races the core port. `no_rw_check` tells
+    // Quartus not to add read-during-write bypass logic (there is no RDW that
+    // matters here), which is what lets both memories infer as M10K block RAM
+    // rather than 300k+ flip-flops. Keep this form: the merged single-block
+    // write-through template does NOT infer on Quartus 18.1.
+    (* ramstyle = "no_rw_check" *) logic [23:0] pmem [8192];
+    (* ramstyle = "no_rw_check" *) logic [15:0] dmem [8192];
 
     logic [12:0] pm_a_addr;
     logic        pm_a_we;
@@ -99,16 +102,20 @@ module adsp2100 (
     logic [15:0] dm_a_q;
 
     always_ff @(posedge clk) begin
-        if (pm_a_we) begin pmem[pm_a_addr] <= pm_a_wdata; pm_a_q <= pm_a_wdata; end
-        else pm_a_q <= pmem[pm_a_addr];
-        if (pm_ext_we) begin pmem[pm_ext_addr] <= pm_ext_wdata; pm_ext_rdata <= pm_ext_wdata; end
-        else pm_ext_rdata <= pmem[pm_ext_addr];
+        if (pm_a_we) pmem[pm_a_addr] <= pm_a_wdata;
+        pm_a_q <= pmem[pm_a_addr];
     end
     always_ff @(posedge clk) begin
-        if (dm_a_we) begin dmem[dm_a_addr] <= dm_a_wdata; dm_a_q <= dm_a_wdata; end
-        else dm_a_q <= dmem[dm_a_addr];
-        if (dm_ext_we) begin dmem[dm_ext_addr] <= dm_ext_wdata; dm_ext_rdata <= dm_ext_wdata; end
-        else dm_ext_rdata <= dmem[dm_ext_addr];
+        if (pm_ext_we) pmem[pm_ext_addr] <= pm_ext_wdata;
+        pm_ext_rdata <= pmem[pm_ext_addr];
+    end
+    always_ff @(posedge clk) begin
+        if (dm_a_we) dmem[dm_a_addr] <= dm_a_wdata;
+        dm_a_q <= dmem[dm_a_addr];
+    end
+    always_ff @(posedge clk) begin
+        if (dm_ext_we) dmem[dm_ext_addr] <= dm_ext_wdata;
+        dm_ext_rdata <= dmem[dm_ext_addr];
     end
 
     // ---------------------------------------------------------------------
@@ -230,6 +237,10 @@ module adsp2100 (
         endcase
     endfunction
 
+    function automatic logic [31:0] rev32(input logic [31:0] v);
+        for (int k = 0; k < 32; k++) rev32[k] = v[31-k];
+    endfunction
+
     function automatic logic [5:0] clz32(input logic [31:0] v);
         clz32 = 6'd32;
         for (int k = 31; k >= 0; k--) if (v[k] && clz32 == 6'd32) clz32 = 6'd31 - k[5:0];
@@ -288,16 +299,6 @@ module adsp2100 (
         case (s)
             3'd0: xsel = r0; 3'd1: xsel = r1; 3'd2: xsel = r_ar; 3'd3: xsel = r_mr0;
             3'd4: xsel = r_mr1; 3'd5: xsel = r_mr2; 3'd6: xsel = r_sr0; default: xsel = r_sr1;
-        endcase
-    endfunction
-    function automatic logic [15:0] alu_y(input logic [1:0] s);
-        case (s)
-            2'd0: alu_y = r_ay0; 2'd1: alu_y = r_ay1; 2'd2: alu_y = r_af; default: alu_y = 16'h0000;
-        endcase
-    endfunction
-    function automatic logic [15:0] mac_y(input logic [1:0] s);
-        case (s)
-            2'd0: mac_y = r_my0; 2'd1: mac_y = r_my1; 2'd2: mac_y = r_mf; default: mac_y = 16'h0000;
         endcase
     endfunction
 
@@ -428,6 +429,26 @@ module adsp2100 (
     wire [2:0] pea_m = pm_hi_fields ? {1'b1, ir[5:4]} : {1'b1, ir[1:0]};
 
     // ---------------------------------------------------------------------
+    // Shared operand muxes. The ALU, multiplier and shifter never run in the
+    // same cycle (an instruction is exactly one of them), so the register-file
+    // read muxes are shared: the per-unit register pair for x-codes 0/1 and
+    // the y-registers are selected first, then a single 8:1 / 4:1 mux. The
+    // idle units compute on the "wrong" operands but their results are never
+    // latched, so this is free.
+    // ---------------------------------------------------------------------
+    logic [15:0] ux0, ux1, uy0, uy1, uy2;
+    logic [15:0] uxop, uyop;
+    always_comb begin
+        if (cls_mac)        begin ux0 = r_mx0; ux1 = r_mx1; end
+        else if (cls_shift) begin ux0 = r_si;  ux1 = r_si;  end
+        else                begin ux0 = r_ax0; ux1 = r_ax1; end   // ALU + DIVS/DIVQ
+        if (cls_mac)        begin uy0 = r_my0; uy1 = r_my1; uy2 = r_mf; end
+        else                begin uy0 = r_ay0; uy1 = r_ay1; uy2 = r_af; end
+        uxop = xsel(xs, ux0, ux1);
+        uyop = (ys == 2'd0) ? uy0 : (ys == 2'd1) ? uy1 : (ys == 2'd2) ? uy2 : 16'h0000;
+    end
+
+    // ---------------------------------------------------------------------
     // ALU: one 17-bit adder with operand inversion does every add/subtract
     // form (and DIVQ's AF +/- X). Sampled at the end of S_ISSUE.
     // ---------------------------------------------------------------------
@@ -439,8 +460,8 @@ module adsp2100 (
     logic  [7:0] alu_st;
     logic        is_divq;
     always_comb begin
-        ax = xsel(xs, r_ax0, r_ax1);
-        ay = alu_y(ys);
+        ax = uxop;
+        ay = uyop;
         is_divq = (opc == 8'h07);
         // adder operand selection
         add_a = ax; add_b = ay; add_ci = 1'b0; add_sub = 1'b0; vflag_b = ay;
@@ -507,8 +528,8 @@ module adsp2100 (
     always_comb begin
         x_signed = (fn < 4'h4) || (fn[1:0] == 2'd0) || (fn[1:0] == 2'd1);
         y_signed = (fn < 4'h4) || (fn[1:0] == 2'd0) || (fn[1:0] == 2'd2);
-        mxv = xsel(xs, r_mx0, r_mx1);
-        myv = mac_y(ys);
+        mxv = uxop;
+        myv = uyop;
         mxs = x_signed ? {mxv[15], mxv} : {1'b0, mxv};
         mys = y_signed ? {myv[15], myv} : {1'b0, myv};
         mprod = mxs * mys;
@@ -529,7 +550,8 @@ module adsp2100 (
     logic        sh_left, sh_arith;
     logic signed [8:0] sh_cnt;      // signed shift count (+ = left) before clamping
     logic [5:0]  sh_n;              // magnitude clamped to 32
-    logic [63:0] f_in, f_out;
+    logic [31:0] rsh_in, rsh_out, rmask;
+    logic        fillb;
     logic [31:0] sres;
     logic        sres_or, sres_we;
     logic [15:0] nse, nsb;
@@ -538,7 +560,7 @@ module adsp2100 (
     logic [31:0] clz_in;
     logic [5:0]  cnt;
     always_comb begin
-        sxv = xsel(xs, r_si, r_si);
+        sxv = uxop;
         sx_hi   = {sxv, 16'h0};
         sx_lo_u = {16'h0, sxv};
         sx_lo_s = {{16{sxv[15]}}, sxv};
@@ -561,15 +583,18 @@ module adsp2100 (
         sh_left = (sh_cnt > 9'sd0);
         if (sh_left) sh_n = (sh_cnt > 9'sd32) ? 6'd32 : sh_cnt[5:0];
         else         sh_n = (sh_cnt < -9'sd32) ? 6'd32 : (-sh_cnt[5:0]);
-        // MAME: shifts by exactly 32 give 0 in every LSHIFT/ASHIFT/NORM form
-        // except a right arithmetic shift, which gives the sign fill. A left
-        // shift by 32 is also 0. Right shifts by >= 32 logical are 0.
-        f_in = sh_left ? {sh_v, 32'h0} : {(sh_arith ? {32{sh_v[31]}} : 32'h0), sh_v};
-        f_out = f_in >> (sh_left ? (7'd32 - {1'b0, sh_n}) : {1'b0, sh_n});
-        sres = f_out[31:0];
-        // a left shift of exactly 32 must be 0 (the funnel would give v)
-        if (sh_left && sh_n == 6'd32) sres = 32'h0;
-        // NORM HI with sc > 32 (sc-1 >= 32): sign fill; the clamp already does that
+        // One 32-bit barrel right-shifter serves every direction: a left shift
+        // is done by reversing the input, right-shifting, and reversing the
+        // result (fill 0 from the right). A right shift fills the vacated top
+        // bits with `fillb` (the sign bit for arithmetic/NORM-HI, else 0).
+        // sh_n runs 0..32; a shift of 32 makes (v >> 32) = 0 and the fill mask
+        // all-ones, so "shift by >= 32 gives 0 or sign-fill" falls out with no
+        // special case.
+        fillb  = (!sh_left && sh_arith) ? sh_v[31] : 1'b0;
+        rsh_in = sh_left ? rev32(sh_v) : sh_v;
+        rmask  = 32'hffffffff >> sh_n;                         // low (32-n) bits set
+        rsh_out = (rsh_in >> sh_n) | (fillb ? ~rmask : 32'h0);
+        sres = sh_left ? rev32(rsh_out) : rsh_out;
         sres_we = (sfn <= 4'hb);
         sres_or = sfn[0] && (sfn <= 4'hb);
         // exponent detectors share one leading-zero counter

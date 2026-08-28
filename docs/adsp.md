@@ -44,32 +44,57 @@ copy of each expensive resource serves every op:
 - **One 17-bit adder** (operand-invert for subtract) does every ALU
   add/subtract/negate/abs *and* DIVQ's AF±X, selected by an operand mux,
   instead of a separate adder inside each of ~10 ALU function cases.
-- **One 64→32 funnel shifter** plus one leading-zero counter cover all of
+- **One 32-bit barrel shifter** (a right shifter with input/output bit-reverse
+  for left shifts, and a fill mask) plus one leading-zero counter cover all of
   LSHIFT/ASHIFT/NORM (both directions, HI/LO, arithmetic/logical fill) and
   EXP/EXPADJ, instead of the previous per-case shift expressions.
 - **One 3-input 48-bit adder** is the MAC accumulator (acc ± product +
   rounding), with the product-negate / accumulate / round decisions reduced
   to three latched control bits.
 - **The multiplier stays a single 16×16** (DSP-block inferred).
+- **Shared operand muxes**: the ALU, multiplier and shifter never run in the
+  same cycle, so the register-file read for the x-operand (an 8:1 mux) and the
+  y-operand (a 4:1 mux) is done once, with the per-unit register pair selected
+  first. The idle units compute on the wrong operands but never latch them.
 - **The register file is an active set + a shadow set** swapped on a
   MSTAT.BANK change, rather than bank-indexed `[2]` pairs that forced a live
   2:1 mux in front of every one of the ~19 registers on every read.
-- Program/data RAM use Intel's one-always true-dual-port template with the
-  `ramstyle = "M10K"` attribute so Quartus 18.1 infers block RAM (the earlier
-  two-always form left them as registers, which alone blew the ALM budget).
+- Program/data RAM: the two-block `ramstyle = "no_rw_check"` template that
+  Quartus 18.1 actually infers as M10K. A merged single-block write-through
+  template does **not** infer here — it silently leaves both memories as
+  ~327,680 flip-flops (Warning 10999, "can't infer memory ... with attribute
+  M10K"), which is what blew the ALM budget; the trap is that the design still
+  builds, just enormous.
 
-Measured with `quartus_map` (`./build-local.sh map`, per-entity numbers in
-`projects/output_files/stunrun_pocket.map.rpt`, "Resource Utilization by
-Entity"):
+Measured with `quartus_map` on the full core (per-entity numbers in the
+"Resource Utilization by Entity" table of
+`projects/output_files/stunrun_pocket.map.rpt`; the TMS34010 GSP, reworked
+separately, was stubbed so the oversized in-progress design would fit and map,
+which does not affect the ADSP entity's own numbers):
 
 | version | combinational ALUTs | registers |
 |---|---|---|
 | before (separate adders/shifters, bank-indexed regs) | 6,051 | 1,821 |
-| after (shared datapath, active+shadow regs) | _MEASURED_PENDING_ | _MEASURED_PENDING_ |
+| shared adder + shifter + MAC accumulator, active+shadow regs | 4,694 | 1,857 |
+| + shared operand muxes, 32-bit barrel shifter | **4,659** | 1,857 |
 
-The bench (both windows, plain and with `io_wait` stalls at cen period 7)
-still passes bit-for-bit after every change here, so the reduction is pure
-restructuring with no behavioural difference.
+A 23% reduction, verified bit-for-bit across all four bench runs (both windows,
+plain and with `io_wait` stalls at cen period 7) after every change.
+
+**Remaining gap to the 3,500 target.** The measured breakdown (Multiplexer
+Restructuring Statistics for `adsp2100:adsp`) shows the cost is now dominated by
+irreducible structure rather than duplicated datapath: the MSTAT.BANK register
+swap (~574 LEs — the game never switches banks, but it must still be correct),
+the instruction-decode selectors (~1,900 LEs of wide muxes off the 8-bit
+opcode), the `mv_val` write-back fan-in that can source any register (~490 LEs),
+and the shared ALU adder's own 17-way operand mux. The operand-mux and shifter
+sharing above bought little because Quartus was already sharing those.
+Reaching 3,500 from here needs a genuinely multi-cycle microarchitecture — one
+ALU/shifter/adder time-shared across the S_ISSUE/S_MEM/S_WB cycles, and the
+bank swap sequenced over several cycles instead of a parallel mux — which is a
+larger rewrite with real correctness risk and a ~40-minute emulated-Quartus
+measurement per iteration. Left for a dedicated pass; the 23% already recovered
+here is safe and shipped.
 
 ## Verification
 
