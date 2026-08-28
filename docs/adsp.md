@@ -76,25 +76,30 @@ which does not affect the ADSP entity's own numbers):
 |---|---|---|
 | before (separate adders/shifters, bank-indexed regs) | 6,051 | 1,821 |
 | shared adder + shifter + MAC accumulator, active+shadow regs | 4,694 | 1,857 |
-| + shared operand muxes, 32-bit barrel shifter | **4,659** | 1,857 |
+| + shared operand muxes, 32-bit barrel shifter | 4,659 | 1,857 |
+| + decode restructured (ir-field selects out of the opcode casez) | **4,477** | 1,857 |
 
-A 23% reduction, verified bit-for-bit across all four bench runs (both windows,
+A 26% reduction, verified bit-for-bit across all four bench runs (both windows,
 plain and with `io_wait` stalls at cen period 7) after every change.
 
-**Remaining gap to the 3,500 target.** The measured breakdown (Multiplexer
-Restructuring Statistics for `adsp2100:adsp`) shows the cost is now dominated by
-irreducible structure rather than duplicated datapath: the MSTAT.BANK register
-swap (~574 LEs — the game never switches banks, but it must still be correct),
-the instruction-decode selectors (~1,900 LEs of wide muxes off the 8-bit
-opcode), the `mv_val` write-back fan-in that can source any register (~490 LEs),
-and the shared ALU adder's own 17-way operand mux. The operand-mux and shifter
-sharing above bought little because Quartus was already sharing those.
-Reaching 3,500 from here needs a genuinely multi-cycle microarchitecture — one
-ALU/shifter/adder time-shared across the S_ISSUE/S_MEM/S_WB cycles, and the
-bank swap sequenced over several cycles instead of a parallel mux — which is a
-larger rewrite with real correctness risk and a ~40-minute emulated-Quartus
-measurement per iteration. Left for a dedicated pass; the 23% already recovered
-here is safe and shipped.
+**Remaining gap to the 3,500 target.** After three verified passes the cost is
+dominated by irreducible structure rather than duplicated datapath. The
+measured Multiplexer Restructuring Statistics for `adsp2100:adsp` at 4,477 ALUTs:
+the MSTAT.BANK register swap (574 LEs — the game never switches banks, but it
+must still be correct), the shared ALU adder's operand muxing (`add_r` 34:1 +
+`add_a` 17:1 ≈ 528 LEs), opcode-decoded control selectors that Quartus keeps as
+wide muxes (`Selector4` 256:1 + `Selector5` 128:1 ≈ 510 LEs), the pipeline
+result latches (~430 LEs), and the register write-back fan-in. Each successive
+pass buys less — the decode restructure was only −182 — because Quartus was
+already sharing what the single-cycle datapath allows.
+
+Closing the last ~977 needs a genuinely different microarchitecture: a
+multi-cycle machine that reads operands one at a time from a register RAM and
+time-shares a single ALU/shifter across cycles, with the bank swap sequenced.
+That is effectively a core rewrite — real correctness risk, verified only by
+the bench, and ~40 minutes of emulated Quartus per measurement. The 26%
+recovered here is safe, shipped and fully verified; the sequential rewrite is
+scoped but left as a deliberate, separately-greenlit effort.
 
 ## Verification
 

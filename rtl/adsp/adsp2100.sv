@@ -332,76 +332,66 @@ module adsp2100 (
     logic cls_cond_any;                    // the condition field is evaluated (CE side effect)
 
     always_comb begin
+        // 1-bit datapath enables + control-flow class flags. Only single-bit
+        // signals here, so this decodes cheaply; the multi-bit ir-field
+        // selections are pulled out below (continuous assigns keyed on the
+        // opcode nibble) so they do not force a 256:1 decode of the whole
+        // opcode.
         cls_alu = 0; cls_mac = 0; cls_shift = 0; unit_to_ar_mr = 1; cls_cond = 0;
         dm_rd = 0; dm_wr = 0; dm_dag1 = 0; dm_dag2 = 0; dm_imm = 0;
         pm_rd = 0; pm_wr = 0; pm_hi_fields = 0;
-        mv_we = 0; mv_grp = 0; mv_reg = 0; mv_src_reg = 0; mv_src_grp = 0; mv_src_reg_n = 0;
-        mv_src_pm = 0; mv_src_imm = 0; mv_imm = 16'h0; mv_after = 0;
-        dual = 0; dual_ddst = 0; dual_pdst = 0;
-        cls_cond_any = 0;
+        mv_we = 0; mv_src_reg = 0; mv_src_pm = 0; mv_src_imm = 0; mv_after = 0;
+        dual = 0; cls_cond_any = 0;
         casez (opc)
             8'h02: cls_cond_any = ~ir[15];
             8'h0a, 8'h0b: cls_cond_any = 1'b1;
-            8'h0d: begin
-                mv_we = 1; mv_grp = ir[11:10]; mv_reg = ir[7:4];
-                mv_src_reg = 1; mv_src_grp = ir[9:8]; mv_src_reg_n = ir[3:0];
-            end
+            8'h0d: begin mv_we = 1; mv_src_reg = 1; end
             8'h0e: begin cls_shift = 1; cls_cond = 1; cls_cond_any = 1; end
-            8'h0f: begin cls_shift = 1; end
-            8'h10: begin cls_shift = 1; mv_we = 1; mv_grp = 0; mv_reg = ir[7:4];
-                         mv_src_reg = 1; mv_src_grp = 0; mv_src_reg_n = ir[3:0]; mv_after = 1; end
+            8'h0f: cls_shift = 1;
+            8'h10: begin cls_shift = 1; mv_we = 1; mv_src_reg = 1; mv_after = 1; end
             8'h11: begin cls_shift = 1;
                          if (ir[15]) pm_wr = 1;
-                         else begin pm_rd = 1; mv_we = 1; mv_grp = 0; mv_reg = ir[7:4]; mv_src_pm = 1; end end
+                         else begin pm_rd = 1; mv_we = 1; mv_src_pm = 1; end end
             8'h12: begin cls_shift = 1; dm_dag1 = 1;
-                         if (ir[15]) dm_wr = 1;
-                         else begin dm_rd = 1; mv_we = 1; mv_grp = 0; mv_reg = ir[7:4]; end end
+                         if (ir[15]) dm_wr = 1; else begin dm_rd = 1; mv_we = 1; end end
             8'h13: begin cls_shift = 1; dm_dag2 = 1;
-                         if (ir[15]) dm_wr = 1;
-                         else begin dm_rd = 1; mv_we = 1; mv_grp = 0; mv_reg = ir[7:4]; end end
+                         if (ir[15]) dm_wr = 1; else begin dm_rd = 1; mv_we = 1; end end
             8'b0001_10??, 8'b0001_11??: cls_cond_any = 1'b1;
             8'b0010_000?: begin cls_mac = 1; cls_cond = 1; cls_cond_any = 1; unit_to_ar_mr = 1; end
             8'b0010_001?: begin cls_alu = 1; cls_cond = 1; cls_cond_any = 1; unit_to_ar_mr = 1; end
             8'b0010_010?: begin cls_mac = 1; cls_cond = 1; cls_cond_any = 1; unit_to_ar_mr = 0; end
             8'b0010_011?: begin cls_alu = 1; cls_cond = 1; cls_cond_any = 1; unit_to_ar_mr = 0; end
-            8'b0010_1???: begin
-                cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = ~opc[2];
-                mv_we = 1; mv_grp = 0; mv_reg = ir[7:4]; mv_src_reg = 1; mv_src_grp = 0; mv_src_reg_n = ir[3:0];
-            end
-            8'b0011_????: begin
-                mv_we = 1; mv_grp = opc[3:2]; mv_reg = ir[3:0]; mv_src_imm = 1;
-                mv_imm = {{2{ir[17]}}, ir[17:4]};
-            end
-            8'b0100_????: begin
-                mv_we = 1; mv_grp = 0; mv_reg = ir[3:0]; mv_src_imm = 1; mv_imm = ir[19:4];
-            end
-            8'b0101_????: begin
-                cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = ~opc[2];
-                if (opc[3]) pm_wr = 1;
-                else begin pm_rd = 1; mv_we = 1; mv_grp = 0; mv_reg = ir[7:4]; mv_src_pm = 1; end
-            end
-            8'b0110_????: begin
-                cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = ~opc[2]; dm_dag1 = 1;
-                if (opc[3]) dm_wr = 1;
-                else begin dm_rd = 1; mv_we = 1; mv_grp = 0; mv_reg = ir[7:4]; end
-            end
-            8'b0111_????: begin
-                cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = ~opc[2]; dm_dag2 = 1;
-                if (opc[3]) dm_wr = 1;
-                else begin dm_rd = 1; mv_we = 1; mv_grp = 0; mv_reg = ir[7:4]; end
-            end
-            8'b1000_????: begin dm_imm = 1; dm_rd = 1; mv_we = 1; mv_grp = opc[3:2]; mv_reg = ir[3:0]; end
+            8'b0010_1???: begin cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = ~opc[2]; mv_we = 1; mv_src_reg = 1; end
+            8'b0011_????: begin mv_we = 1; mv_src_imm = 1; end
+            8'b0100_????: begin mv_we = 1; mv_src_imm = 1; end
+            8'b0101_????: begin cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = ~opc[2];
+                                if (opc[3]) pm_wr = 1; else begin pm_rd = 1; mv_we = 1; mv_src_pm = 1; end end
+            8'b0110_????: begin cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = ~opc[2]; dm_dag1 = 1;
+                                if (opc[3]) dm_wr = 1; else begin dm_rd = 1; mv_we = 1; end end
+            8'b0111_????: begin cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = ~opc[2]; dm_dag2 = 1;
+                                if (opc[3]) dm_wr = 1; else begin dm_rd = 1; mv_we = 1; end end
+            8'b1000_????: begin dm_imm = 1; dm_rd = 1; mv_we = 1; end
             8'b1001_????: begin dm_imm = 1; dm_wr = 1; end
             8'b1010_????: begin dm_dag1 = 1; dm_wr = 1; end
             8'b1011_????: begin dm_dag2 = 1; dm_wr = 1; end
-            8'b11??_????: begin
-                cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = 1;
-                dm_dag1 = 1; dm_rd = 1; pm_rd = 1; pm_hi_fields = 1; dual = 1;
-                dual_ddst = opc[3:2]; dual_pdst = opc[5:4];
-            end
+            8'b11??_????: begin cls_mac = ~opc[1]; cls_alu = opc[1]; unit_to_ar_mr = 1;
+                                dm_dag1 = 1; dm_rd = 1; pm_rd = 1; pm_hi_fields = 1; dual = 1; end
             default: ;
         endcase
     end
+
+    // multi-bit ir-field selections (used only when the matching enable is set;
+    // driving them unconditionally keeps them out of the opcode casez so each
+    // is a small mux keyed on the opcode nibble, not a 256:1 decode)
+    wire [3:0] op_hn = opc[7:4];
+    assign mv_grp      = (opc == 8'h0d) ? ir[11:10]
+                       : ((op_hn == 4'h3 || op_hn == 4'h8) ? opc[3:2] : 2'd0);
+    assign mv_reg      = (op_hn == 4'h3 || op_hn == 4'h4 || op_hn == 4'h8) ? ir[3:0] : ir[7:4];
+    assign mv_src_grp  = (opc == 8'h0d) ? ir[9:8] : 2'd0;
+    assign mv_src_reg_n = ir[3:0];
+    assign mv_imm      = (op_hn == 4'h4) ? ir[19:4] : {{2{ir[17]}}, ir[17:4]};
+    assign dual_ddst   = opc[3:2];
+    assign dual_pdst   = opc[5:4];
 
     // memory-write source (pre-instruction register value or immediate)
     logic [15:0] wr_src_val;
