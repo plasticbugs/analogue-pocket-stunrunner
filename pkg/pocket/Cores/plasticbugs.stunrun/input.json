@@ -1,0 +1,52 @@
+{
+    "input": {
+        "magic": "APF_VER_1",
+        "controllers": [
+            {
+                "type": "default",
+                "mappings": [
+                    {
+                        "id": 120,
+                        "name": "Boost",
+                        "key": "pad_btn_b"
+                    },
+                    {
+                        "id": 121,
+                        "name": "Fire",
+                        "key": "pad_btn_a"
+                    },
+                    {
+                        "id": 122,
+                        "name": "Fire (alt)",
+                        "key": "pad_btn_x"
+                    },
+                    {
+                        "id": 123,
+                        "name": "Boost (alt)",
+                        "key": "pad_btn_y"
+                    },
+                    {
+                        "id": 124,
+                        "name": "Fire (alt)",
+                        "key": "pad_trig_r"
+                    },
+                    {
+                        "id": 125,
+                        "name": "Boost (alt)",
+                        "key": "pad_trig_l"
+                    },
+                    {
+                        "id": 126,
+                        "name": "Coin",
+                        "key": "pad_btn_select"
+                    },
+                    {
+                        "id": 127,
+                        "name": "Start",
+                        "key": "pad_btn_start"
+                    }
+                ]
+            }
+        ]
+    }
+}
