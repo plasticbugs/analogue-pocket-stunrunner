@@ -33,8 +33,8 @@ module gsp_icache (
     input  logic        inv_en,
     input  logic [27:0] inv_addr
 );
-    logic [15:0] mem_data [0:1023];
-    logic [26:0] mem_tag  [0:1023];     // {valid, gen[7:0], tag[17:0]}
+    (* ramstyle = "no_rw_check" *) logic [15:0] mem_data [0:1023];
+    (* ramstyle = "no_rw_check" *) logic [26:0] mem_tag  [0:1023];     // {valid, gen[7:0], tag[17:0]}
 
     logic [7:0]  gen;
     logic        sweep;

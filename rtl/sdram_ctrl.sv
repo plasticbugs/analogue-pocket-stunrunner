@@ -90,12 +90,21 @@ module sdram_ctrl #(
 
     // ---- state ---------------------------------------------------------------
     typedef enum logic [3:0] {
-        S_STARTUP, S_IDLE, S_OPEN1, S_OPEN2, S_WAIT5, S_WAIT4, S_WAIT3, S_WAIT2, S_WAIT1,
+        S_STARTUP, S_IDLE, S_ARB, S_OPEN1, S_OPEN2, S_WAIT5, S_WAIT4, S_WAIT3, S_WAIT2, S_WAIT1,
         S_REF, S_BOPEN1, S_BOPEN2, S_BREAD, S_BEND
     } state_t;
     state_t state;
 
     logic [13:0] refresh_count;
+    // The refresh-due comparison is registered one clock ahead. Evaluated in
+    // place inside S_IDLE it put a 14-bit compare in series with the branch
+    // select that loads SDRAM_A, which was the last path missing 96 MHz
+    // setup; as a single registered bit the cone to SDRAM_A is short. It is
+    // It compares the current count (no extra adder -- an incremented compare
+    // cost 6 ALMs we do not have), so the refresh is issued one clock later
+    // than the in-place test would have: irrelevant against a 750-clock
+    // interval, and the interval itself is unchanged.
+    logic        refresh_due;
     logic  [2:0] cur;            // client being served
     logic  [9:1] cur_col;
     logic        cur_we;
@@ -115,8 +124,38 @@ module sdram_ctrl #(
 
     // any random client pending? Round-robin: the first pending client after
     // the one served last, so a saturating client cannot starve the others.
+    //
+    // The scan and the c_addr[] mux behind it are ~15 ns at 96 MHz, and a
+    // client's `req` is a genuinely single-cycle input: it can rise on the
+    // clock before the controller happens to be in S_IDLE, so no multicycle
+    // can cover req -> SDRAM_A. The two halves are therefore split by the
+    // S_ARB state: S_IDLE registers the winner (req -> pick -> cur, ~5.5 ns)
+    // and S_ARB drives the row address from the registered index
+    // (c_addr -> mux -> SDRAM_A, ~9 ns). Both halves are honest single-cycle
+    // paths. It costs one clock per random access (9 instead of 8); the
+    // random clients are all cen-throttled well below that rate and the
+    // display line fetch uses the burst port, which is untouched.
     logic        any_req;
     logic  [2:0] pick, last;
+    // Registered copy, used ONLY by the burst branch's yield gate below. That
+    // branch drives SDRAM_A, so a combinational any_req there would put c_req
+    // and c_ack back on a single-cycle path to the address pins -- the very
+    // thing S_ARB exists to avoid. Letting the gate see the request one clock
+    // late only means a burst chunk may start one clock before a random client
+    // is noticed; the client is then served at the end of that chunk exactly as
+    // before.
+    logic        any_req_q;
+    always_ff @(posedge clk) any_req_q <= any_req;
+
+    // Registered burst-open decision. Evaluated in place, the
+    // b_active && !(b_yield && any_req_q) test sat in series with the b_next
+    // mux onto the SDRAM address pins and was the last path missing setup.
+    // As a register it is one bit into that branch; it is re-qualified with
+    // the live b_active at the use site so a burst that ended on the
+    // previous clock can never be re-opened from a stale decision. Being one
+    // clock late only delays a chunk open by a clock, at chunk boundaries.
+    logic        b_start;
+    always_ff @(posedge clk) b_start <= b_active && !(b_yield && any_req_q) && !refresh_due;
     always_comb begin
         any_req = 1'b0; pick = 3'd0;
         for (int k = NCLI; k >= 1; k--) begin
@@ -134,6 +173,7 @@ module sdram_ctrl #(
         b_done  <= 1'b0;
         for (int i = 0; i < NCLI; i++) c_ack[i] <= 1'b0;
         refresh_count <= refresh_count + 14'd1;
+        refresh_due   <= (refresh_count > CYCLES_PER_REFRESH);
 
         // capture pipeline: dq_in registered every clock (I/O cell register)
         dq_in <= SDRAM_DQ;
@@ -169,13 +209,14 @@ module sdram_ctrl #(
             end
 
             S_IDLE: begin
-                if (refresh_count > CYCLES_PER_REFRESH) begin
+                if (refresh_due) begin
                     command <= CMD_AUTO_REFRESH;
                     refresh_count <= '0;
+                    refresh_due   <= 1'b0;      // overrides the default above
                     wait_n <= 3'd6;              // tRFC 66 ns
                     state  <= S_REF;
                 end
-                else if (b_active && !(b_yield && any_req)) begin
+                else if (b_start && b_active) begin
                     // (re)open the row for the next chunk
                     SDRAM_A  <= b_next[22:10];
                     SDRAM_BA <= b_next[24:23];
@@ -186,20 +227,25 @@ module sdram_ctrl #(
                 end
                 else if (any_req) begin
                     cur       <= pick;
-                    cur_col   <= c_addr[pick][9:1];
-                    cur_we    <= c_we[pick];
-                    cur_wdata <= c_wdata[pick];
-                    cur_be    <= c_be[pick];
-                    SDRAM_A   <= c_addr[pick][22:10];
-                    SDRAM_BA  <= c_addr[pick][24:23];
-                    command   <= CMD_ACTIVE;
                     last      <= pick;
                     b_yield   <= 1'b0;
-                    state     <= S_OPEN1;
+                    state     <= S_ARB;
                 end
             end
 
             // ---- single access -----------------------------------------------
+            // Grant: the winner is now a register, so the client address mux
+            // and the ACTIVE command are one clock clear of the request scan.
+            S_ARB: begin
+                cur_col   <= c_addr[cur][9:1];
+                cur_we    <= c_we[cur];
+                cur_wdata <= c_wdata[cur];
+                cur_be    <= c_be[cur];
+                SDRAM_A   <= c_addr[cur][22:10];
+                SDRAM_BA  <= c_addr[cur][24:23];
+                command   <= CMD_ACTIVE;
+                state     <= S_OPEN1;
+            end
             S_OPEN1: state <= S_OPEN2;                          // tRCD
             S_OPEN2: begin
                 // A10 = auto precharge; A12:11 drive DQM (write byte enables)
@@ -286,6 +332,7 @@ module sdram_ctrl #(
         if (init) begin
             state <= S_STARTUP;
             refresh_count <= REFRESH_MAX - STARTUP_CYCLES;
+            refresh_due   <= 1'b0;
             ready <= 1'b0;
             b_active <= 1'b0; b_issued <= '0; b_remain <= '0; b_yield <= 1'b0; b_accepted <= 1'b0; last <= '0;
             for (int i = 0; i < 6; i++) cap[i] <= '0;

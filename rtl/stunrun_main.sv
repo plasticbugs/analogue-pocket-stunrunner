@@ -110,6 +110,7 @@ module stunrun_main #(
     logic  [3:0] cacr_out;
     logic  [2:0] fc;
     logic        longword, clr_berr, skipFetch;
+    logic  [2:0] step_gap;          // holds the bus FSM off for 3 clocks after clkena
 
     TG68KdotC_Kernel cpu (
         .clk            ( clk ),
@@ -236,9 +237,10 @@ module stunrun_main #(
         rom_req <= rom_req;
         clkena  <= 1'b0;
         dbg_step <= 1'b0;
+        step_gap <= {step_gap[1:0], clkena};
 
         if (reset) begin
-            bst <= B_IDLE; tok <= '0; clkena <= 1'b0; rom_req <= 1'b0;
+            bst <= B_IDLE; tok <= '0; clkena <= 1'b0; rom_req <= 1'b0; step_gap <= '0;
             zp1 <= 1'b0; zp2 <= 1'b0; gsp_reset_n <= 1'b0;
             adsp_bank <= 1'b0; br_n_lat <= 1'b1; halt_n_lat <= 1'b0; adsp_reset <= 1'b1;
             irq_timer_pend <= 1'b0; timer_cnt <= '0;
@@ -255,10 +257,21 @@ module stunrun_main #(
 
             case (bst)
                 B_IDLE: begin
-                    // never sample the bus on the cycle right after a step:
-                    // the kernel's address settles one clock after busstate
-                    // (the TG68K.vhd wrapper waits a state for the same reason)
-                    if (tok >= 6'(STEP_COST) && !clkena) begin
+                    // Do not sample the bus for four clocks after a step. The
+                    // kernel's registers update on the edge that ends the
+                    // clkena cycle, and every one of this module's captures of
+                    // a kernel output -- busstate/skipFetch into bst, tok and
+                    // clkena, and A/data_write/uds/lds into the peripheral and
+                    // RAM write ports -- happens on the sampling tick. Without
+                    // the gap that is a ONE-clock path, and the widest of those
+                    // cones (kernel state -> address decode -> the work-RAM
+                    // write port) measures 31.8 ns. `!clkena` blocks the first
+                    // clock; step_gap blocks the next three, so the sample lands
+                    // four clocks after the kernel moved and the 4/3 multicycle
+                    // in the SDC describes real silicon. The step rate is set by
+                    // the token bucket (one step per 3.75 cen_8m, about 45
+                    // clocks), so five clocks of bus FSM cost nothing.
+                    if (tok >= 6'(STEP_COST) && !clkena && step_gap == 3'd0) begin
                         // skipFetch: the kernel is in a read state whose bus
                         // cycle must NOT happen (68010 CLR/SF/etc. do not read
                         // their destination); step without touching the bus,

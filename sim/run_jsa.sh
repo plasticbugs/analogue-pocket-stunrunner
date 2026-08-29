@@ -32,7 +32,12 @@ open(os.path.join(out, 'oki.bin'), 'wb').write(oki)
 EOF
 
 echo "--- building bench ---"
-JT51=$(sed 's#^#modules/sound-jt51/hdl/#' modules/sound-jt51/hdl/jt51.f | tr '\n' ' ')
+# jt51.f is upstream's file list and ends with ../ver/common/sep32{,_cnt}.v.
+# Those are debug-only helpers, instantiated solely under `ifdef JT51_DEBUG +
+# `ifdef SIMULATION (jt51_eg.v), and only modules/sound-jt51/hdl is vendored --
+# so they do not exist here and neither Quartus nor this bench needs them.
+# Drop any ../ver/ entry rather than carrying dead files into the build.
+JT51=$(grep -v '^\.\./ver/' modules/sound-jt51/hdl/jt51.f | sed 's#^#modules/sound-jt51/hdl/#' | tr '\n' ' ')
 JT6295="modules/sound-jt6295/hdl/jt6295.v modules/sound-jt6295/hdl/jt6295_adpcm.v modules/sound-jt6295/hdl/jt6295_timing.v \
         modules/sound-jt6295/hdl/jt6295_acc.v modules/sound-jt6295/hdl/jt6295_ctrl.v modules/sound-jt6295/hdl/jt6295_rom.v \
         modules/sound-jt6295/hdl/jt6295_serial.v modules/sound-jt6295/hdl/jt6295_sh_rst.v"

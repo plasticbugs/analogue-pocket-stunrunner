@@ -14,9 +14,48 @@ is not here has not been verified.
 | TMS34010 core (`rtl/gsp/`) | `sim/run_gsp.sh` | MAME GSP instruction trace (PC, ST, SP, A0–A14, B0–B14 per instruction) + end-of-window VRAM | PASS on 3 windows: boot/download (1,860,171 instr), 3D attract (88,534), title screens (3,917,724); 0 divergences over 5.87 M instructions; final VRAM word-identical; 60 mnemonics / 121 operand forms covered — `docs/gsp.md` |
 | ADSP-2100 core (`rtl/adsp/`) | `sim/run_adsp.sh` | MAME ADSP instruction trace + every data-space access + 68k RAM writes replayed | PASS on 2 windows: 5,274,473 and 22,196,327 instructions, 0 mismatches, final memories identical; also PASS with random `io_wait` stalls — `docs/adsp.md` |
 | Whole machine | `sim/run_system.sh` | MAME boot timeline (per-frame CPU PCs), MAME's title-screen frame | boots from the ROM download and reaches the title screen **pixel-identical to MAME (0 differing pixels, dy=0)** when captured on DE. Palette word-identical to MAME (1024/1024). Sound board answers the reset and receives the title-music command; all three processors run their MAME loops |
+| Synthesis (Quartus 18.1, 5CEBA4) | `./build-local.sh` | — | **fits, compiles and closes timing**: Fitter successful, 0 errors; 18,286 / 18,480 ALMs (99 %), 15,533 registers, block RAM 51 %, 22/66 DSP, 224/224 pins. **Zero negative slack** — setup and hold met at every corner (slow 0 °C / 85 °C, fast 0 °C / 85 °C), worst margin +0.116 ns. Note the worst setup corner is slow **0 °C**, not 85 °C (temperature inversion): analyse that corner explicitly, `create_timing_netlist -model slow -temperature 0 -voltage 1100`. |
 | Hardware (Pocket) | — | — | not yet built |
 
 ## Lessons recorded on the way
+
+- **Timing closure on enable-stepped cores: prove the budget, don't assume it.**
+  The first full compile fit the device but missed the 96 MHz core clock by
+  -18 ns. The instinct -- "these cores run on clock enables, so everything
+  inside them has 16 clocks; multicycle the whole module" -- is *wrong* and is
+  the dangerous kind of wrong: a multicycle on a path that really does resolve
+  in one clock silently produces hardware that fails where simulation passed.
+  Both the GSP and the ADSP are micro-sequenced: the enable only *starts* an
+  instruction, after which the FSM steps every single clock. What is provably
+  stable is narrower -- a register written once per instruction and read N
+  states later. So the rule used here:
+
+  1. Ask STA which paths actually fail, by endpoint (`get_timing_paths` +
+     `get_path_info -from/-to`), and fix them in tiers. Each tier cleared
+     reveals the next; -18 -> -11.5 -> -9.2 -> -7.4 -> -7.0 -> -6.2 -> -6.0.
+  2. For each failing source register, find *every* write site in the RTL and
+     the state each one sits in (grep, mechanically -- one missed site
+     invalidates the argument). Only then decide the class.
+  3. If the source is genuinely per-instruction stable, write the multicycle
+     **with the stability argument in a comment next to it**.
+  4. If it is not -- if the capture really is one clock later -- do NOT
+     multicycle it. Add a settle clock in the RTL (the `mph` / `alu_ph`
+     pattern: `S_X: if (!mph) mph <= 1'b1; else begin mph <= 1'b0; ... end`),
+     which makes the two-clock budget real, then constrain to match. Eleven
+     GSP states and one ADSP state needed this.
+  5. Re-run the trace bench after every RTL change. The settle clocks are free
+     in wall-clock terms (the engine is enable-throttled, so the extra clock
+     lands inside slack that already existed) and the bench proves it: GSP
+     6/6 windows and the ADSP both stayed ALL PASS throughout.
+
+  Iterate with `quartus_sta -t` against the already-fitted netlist (~2-3 min)
+  rather than a full compile (~30 min); a relax-only SDC edit can only gain
+  slack on an existing placement, so the fast loop is trustworthy for
+  convergence. Scripts: `projects/worst15.tcl`, `projects/list_sources.tcl`.
+  Never write a blanket `-from <module>|* -to <module>|*` for a
+  micro-sequenced core; the FSM state, step counters and memory latches inside
+  it change every clock.
+
 
 - **TG68K bus sampling.** The kernel's `addr_out` settles one clock after
   `busstate` changes on a step; sampling the bus on the cycle right after

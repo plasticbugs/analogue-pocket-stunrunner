@@ -84,13 +84,30 @@ module jsa2 (
     // few CPU cycles so T65 sees a clean Res_n. MAME resets the JSA device and
     // all its children, so the latches, the FM and ADPCM chips and the volume
     // register go back to their power-up state too.
+    //
+    // The counter is loaded and decremented only on a cen_cpu tick. The 68k's
+    // reset pulse arrives on an arbitrary clock, so it is latched in rst_pend
+    // and applied at the next tick: board_rst then feeds jt51's reset, and that
+    // cone (through the envelope generator's rate adder and comparators) is
+    // 10.2 ns on its own -- one clock cannot hold it, and only a source that is
+    // stable for a whole cen_cpu period (53 clocks) can be multicycled honestly.
+    // The delay this adds is at most one 6502 cycle out of the fifteen the
+    // reset is held for.
     logic [3:0] rst_cnt;
+    logic       rst_pend;
     always_ff @(posedge clk) begin
-        if (reset)          rst_cnt <= 4'hf;
-        else if (snd_reset) rst_cnt <= 4'hf;
-        else if (cen_cpu && rst_cnt != 4'd0) rst_cnt <= rst_cnt - 4'd1;
+        if (reset) begin
+            rst_cnt <= 4'hf; rst_pend <= 1'b0;      // board_rst is high from the reset term itself
+        end else if (cen_cpu) begin
+            if (rst_pend || snd_reset)   rst_cnt <= 4'hf;
+            else if (rst_cnt != 4'd0)    rst_cnt <= rst_cnt - 4'd1;
+            rst_pend <= 1'b0;
+        end else if (snd_reset) begin
+            rst_pend <= 1'b1;
+        end
     end
     wire board_rst = reset | (rst_cnt != 4'd0);
+
 
     // -------------------------------------------------------------------------
     // CPU
@@ -244,6 +261,20 @@ module jsa2 (
     end
     assign bank = wrio[7:6];
 
+    // The two sound chips get their reset through a register of their own.
+    // board_rst comes from the core reset synchroniser, which sits at the other
+    // end of the die, and jt51's rst is not a plain register clear -- it reaches
+    // into the envelope generator's rate adder and comparators and the phase
+    // generator, about 8 ns of logic. Driven straight from board_rst the whole
+    // thing was one 10.7 ns clock. Registered here, Quartus can place (and
+    // duplicate) the driver next to the chip it resets. One clock of extra
+    // reset latency out of the ~800 the reset is held for.
+    logic ym_rst, oki_rst;
+    always_ff @(posedge clk) begin
+        ym_rst  <= board_rst | ~wrio[0];
+        oki_rst <= board_rst | ~wrio[2];
+    end
+
     // -------------------------------------------------------------------------
     // YM2151
     // -------------------------------------------------------------------------
@@ -275,7 +306,7 @@ module jsa2 (
     wire        ym_sample;
 
     jt51 u_ym (
-        .rst    (board_rst | ~wrio[0]),
+        .rst    (ym_rst),
         .clk    (clk),
         .cen    (cen_ym),
         .cen_p1 (cen_cpu),
@@ -311,7 +342,7 @@ module jsa2 (
     wire signed [13:0] oki_snd;
 
     jt6295 #(.INTERPOL(0), .SAMPLE(0)) u_oki (
-        .rst      (board_rst | ~wrio[2]),
+        .rst      (oki_rst),
         .clk      (clk),
         .cen      (cen_oki),
         .ss       (wrio[3]),
@@ -387,7 +418,11 @@ module jsa2 (
     logic signed [30:0] ym_prod;
     logic signed [17:0] oki_term;
     logic signed [18:0] mix;
-    logic [1:0] mix_ph;
+    // One extra pipeline slot per stage: the volume multiply
+    // (ym_sum * ym_vol * 1404) is a 17x3x31 cone, 12 ns at 96 MHz, and
+    // capturing it on the clock right after cen_ym gave it one. cen_ym is 26.8
+    // clocks apart, so spending four of them costs nothing.
+    logic [3:0] mix_ph;
     always_ff @(posedge clk) begin
         if (board_rst) begin
             ym_sum   <= '0;
@@ -399,15 +434,15 @@ module jsa2 (
             mix_ph   <= '0;
         end else begin
             audio_valid <= 1'b0;
-            mix_ph <= {mix_ph[0], cen_ym};
+            mix_ph <= {mix_ph[2:0], cen_ym};
             if (cen_ym) begin
                 ym_sum   <= 17'(ym_l) + 17'(ym_r);
                 oki_term <= ym_ct1 ? (oki_vol ? 18'(oki_snd) * 18'sd6 : 18'(oki_snd) * 18'sd3) : 18'sd0;
             end
-            if (mix_ph[0]) begin
+            if (mix_ph[1]) begin
                 ym_prod <= ym_sum * $signed({1'b0, ym_vol}) * 31'sd1404;
             end
-            if (mix_ph[1]) begin
+            if (mix_ph[3]) begin
                 mix <= 19'(ym_prod >>> 15) + 19'(oki_term);
                 audio_valid <= 1'b1;
             end

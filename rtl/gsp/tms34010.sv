@@ -89,10 +89,10 @@ module tms34010 (
     // ------------------------------------------------------------------
     // State
     // ------------------------------------------------------------------
-    logic [31:0] rf [0:30] /*verilator public*/;     // A0-A14 = 0..14, SP = 15, B0-B14 = 30..16
+    (* ramstyle = "logic" *) logic [31:0] rf [0:30] /*verilator public*/;     // A0-A14 = 0..14, SP = 15, B0-B14 = 30..16
     logic [31:0] pc /*verilator public*/;
     logic [31:0] st /*verilator public*/;
-    logic [15:0] io [0:31] /*verilator public*/;
+    (* ramstyle = "logic" *) logic [15:0] io [0:31] /*verilator public*/;
 
     logic [15:0] ir;
     logic [31:0] imm, imm2;
@@ -246,18 +246,31 @@ module tms34010 (
     endfunction
 
     // leading-zero count of a 32-bit value (0 if v == 0)
+    // Leading-zero count for LMO: the bit position of the leftmost one counted
+    // down from bit 31 (0 when bit 31 is set), and 0 for v == 0.
+    //
+    // Written as a five-stage binary search on purpose. The obvious
+    // "increment while not found" loop synthesises to 32 chained 6-bit
+    // incrementers -- Add74..Add88 in the first fitted build, a 23.2 ns
+    // ripple that made rf -> rf the worst path in the design (35.6 ns).
+    // Each stage keeps the half that holds the leftmost one and records which
+    // half that was. The bottom bit of every narrowed window is dropped: if
+    // every bit above it is zero the answer is already forced, so it is never
+    // read (hence the [n:1] ranges).
     function automatic logic [5:0] lzc(input logic [31:0] v);
-        logic [5:0] n;
-        logic       found;
-        logic [4:0] bi;
-        n = 6'd0; found = 1'b0;
-        for (int i = 0; i < 32; i++) begin
-            bi = 5'd31 - 5'(i);
-            if (!found) begin
-                if (v[bi]) found = 1'b1; else n = n + 6'd1;
-            end
-        end
-        lzc = (v == 32'd0) ? 6'd0 : n;
+        logic [15:1] w1;
+        logic  [7:1] w2;
+        logic  [3:1] w3;
+        logic  [4:0] n;
+        n[4] = (v[31:16] == 16'd0);
+        w1   = n[4] ? v[15:1] : v[31:17];
+        n[3] = (w1[15:8] == 8'd0);
+        w2   = n[3] ? w1[7:1] : w1[15:9];
+        n[2] = (w2[7:4] == 4'd0);
+        w3   = n[2] ? w2[3:1] : w2[7:5];
+        n[1] = (w3[3:2] == 2'd0);
+        n[0] = ~(n[1] ? w3[1] : w3[3]);
+        lzc  = (v == 32'd0) ? 6'd0 : {1'b0, n};
     endfunction
 
     // ------------------------------------------------------------------
@@ -465,7 +478,7 @@ module tms34010 (
         S_BLT0, S_BLT1, S_BLT1B, S_BLT1C, S_BLT1D, S_BLT2, S_BLT2B, S_BLT2C, S_BLT2D, S_BLT2E,
         S_BLT_ROW, S_BLT_ROWB, S_BLT_ROWC, S_BLT_SRC0, S_BLT_SRC0W, S_BLT_SRC0X, S_BLT_DST0, S_BLT_DST0W,
         S_BLT_PIX, S_BLT_SRCNW, S_BLT_SRCNX, S_BLT_DSTN, S_BLT_DSTNW, S_BLT_PIX1, S_BLT_PIX2, S_BLT_WRW,
-        S_BLT_FLUSH, S_BLT_FLUSHR, S_BLT_NEXTROW, S_BLT_END, S_BLT_END2, S_BLT_END3, S_BLT_END4
+        S_BLT_FLUSH, S_BLT_FLUSHR, S_BLT_NEXTROW, S_BLT_END, S_BLT_END2, S_BLT_END3, S_BLT_END3B, S_BLT_END4
     } state_t;
 
     // writeback selectors for the shared units
@@ -483,6 +496,38 @@ module tms34010 (
     wb_t    wb_sel, xy_wb;
     fl_t    wb_fl;
     logic [4:0] wb_idx;
+    // Settle clocks. At 96 MHz the shared-unit combinational cones (~15-22 ns:
+    // ALU adder+flags, 32-bit rotator+mask, the opcode-selected S_EXEC action
+    // mux over the register-file read ports) do not fit a single 10.4 ns clock.
+    // Every state that consumes such a cone one clock after its operands were
+    // registered therefore spends one settle clock first: alu_ph for S_ALU, and
+    // the shared mph for S_DECODE / S_EXEC / S_SH / S_XY1 / S_XY2 / S_PW2 / S_PW3 /
+    // S_PR2 / S_FRD1 / S_FRD2 / S_FW0B / S_FW0C / S_BLT1B / S_BLT1D / S_BLT2D /
+    // S_BLT2E / S_BLT_ROWB /
+    // S_BLT_SRC0X / S_BLT_SRCNX / S_BLT_PIX2 / S_BLT_WRW / S_MUL2 / S_MUL3 /
+    // S_DIV2 / S_BLT2C / S_BLT_END3 / S_BLT_END4 (mutually exclusive states, one
+    // bit suffices; each sets it on entry and clears it when it acts). Each cone
+    // then spans two real clocks, matching the multicycles in the SDC.
+    //
+    // The last six are settled for a second reason, and it is the one that makes
+    // the register-file exceptions in the SDC provable rather than argued:
+    //
+    //   EVERY register-file write in this core now happens on the acting tick of
+    //   an mph/alu_ph settled state (S_ALU, S_SH, S_EXEC, S_MUL2, S_MUL3, S_DIV2,
+    //   S_BLT2C, S_BLT_END3, S_BLT_END4).
+    //
+    // The clock before an acting tick is that state's settle tick, and a settle
+    // tick assigns nothing but mph/alu_ph. So no register the FSM owns can change
+    // less than two clocks before a register-file write: the whole rf write cone
+    // (rfw_en / rfw_idx / rfw_val, the opcode action mux, the 32:1 read ports,
+    // state, istep, the alu/shifter operands, the blit latches) has a real
+    // two-clock budget. The exceptions are the settle flags themselves and
+    // `mul_p`, which reloads on every clock including settle ticks; both are
+    // excluded from that multicycle in the SDC. The engine is throttled to one instruction per cen_6m (16
+    // clocks) and every external word access waits for cen in S_W0, so for the
+    // common cen-bound instruction these extra clocks cost little net time
+    // (bench-measured on the trace windows).
+    logic       alu_ph, mph;
 
     opc_t   opc;
     logic   fsel, rbit;
@@ -497,6 +542,20 @@ module tms34010 (
     logic [31:0] fincv;
     logic [31:0] k32;                // ADDK/SUBK/MOVK constant
     always_comb begin
+        // Instruction decode is combinational off the fetched `ir`, NOT a set of
+        // registers latched in S_DECODE one clock before S_EXEC. `ir` is stable
+        // from the fetch edge until the next fetch (>=16 clocks, cen-throttled),
+        // so every decode/read cone below (opcode-selected S_EXEC action mux, the
+        // 32:1 register-file read mux) is anchored on `ir` with the full
+        // fetch->EXEC window (>=4 clocks with the S_DECODE/S_EXEC settle clocks)
+        // instead of one clock, and is multicycled from `ir` in the SDC. Keeping
+        // it combinational (rather than latching it at both fetch paths) avoids
+        // replicating the ~700-ALM opcode decoder. `immn` stays a REGISTER
+        // (latched at the S_DECODE act) because S_FTDONE compares it one clock
+        // after an opcode fetch -- as a register that compare carries no ir cone.
+        opc  = dec_op(ir);
+        fsel = dec_fsel(ir);
+        rbit = ir[4];
         ri_d  = ridx(rbit, ir[3:0]);
         ri_s  = ridx(rbit, ir[8:5]);
         rdv   = rf[ri_d];
@@ -808,6 +867,8 @@ module tms34010 (
             pc <= 32'h0;
             reset_deferred <= 1'b1;
             istep <= 4'd0;
+            alu_ph <= 1'b0;
+            mph    <= 1'b0;
         end else begin
             case (state)
             // ---------------------------------------------------------------
@@ -945,25 +1006,23 @@ module tms34010 (
                     state  <= S_FT0;
                 end
             end
-            S_DECODE: begin
-                begin
-                    opc_t d;
-                    d = dec_op(ir);
-                    opc  <= d;
-                    fsel <= dec_fsel(ir);
-                    rbit <= ir[4];
-                    immn <= dec_immn(d, ir);
-                    istep <= 4'd0;
-                    if (dec_immn(d, ir) != 3'd0) begin
-                        immcnt <= 3'd1;
-                        ft_dst <= 3'd1;
-                        state  <= S_FT0;
-                    end else state <= S_EXEC;
-                end
+            // One settle clock, then act: the dec_immn cone off `ir` then has two
+            // clocks to the captures here (immn/immcnt/ft_dst/state), three from
+            // the fetch edge -- the 3/2 ir multicycle for these dests in the SDC.
+            S_DECODE: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
+                istep <= 4'd0;
+                immn  <= dec_immn(opc, ir);
+                if (dec_immn(opc, ir) != 3'd0) begin
+                    immcnt <= 3'd1;
+                    ft_dst <= 3'd1;
+                    state  <= S_FT0;
+                end else state <= S_EXEC;
             end
 
             // ---------------- shared ALU / shifter writeback ----------------
-            S_ALU: begin
+            S_ALU: if (!alu_ph) alu_ph <= 1'b1; else begin
+                alu_ph <= 1'b0;
                 state <= wb_next;
                 case (wb_sel)
                     WB_RD:        begin rfw_en = 1'b1; rfw_idx = wb_idx; rfw_val = alu_r; end
@@ -991,7 +1050,8 @@ module tms34010 (
                     default: begin end
                 endcase
             end
-            S_SH: begin
+            S_SH: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 state <= wb_next;
                 case (wb_sel)
                     WB_RD:     begin rfw_en = 1'b1; rfw_idx = wb_idx; rfw_val = sh_r; end
@@ -1063,12 +1123,14 @@ module tms34010 (
                 sh_x <= {fr_w1, fr_w0}; sh_k <= {1'b0, fr_addr[3:0]}; sh_mode <= SH_SHR;
                 state <= S_FRD1;
             end
-            S_FRD1: begin
+            S_FRD1: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 T <= sh_r;
                 sh_x <= {16'h0, mrd}; sh_k <= 5'd0 - {1'b0, fr_addr[3:0]}; sh_mode <= SH_SHL;
                 state <= (fr_third && fr_addr[3:0] != 4'h0) ? S_FRD2 : S_FRD3;
             end
-            S_FRD2: begin
+            S_FRD2: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 T <= T | sh_r;
                 state <= S_FRD3;
             end
@@ -1087,12 +1149,14 @@ module tms34010 (
                 fw_k  <= 2'd0;
                 state <= S_FW0B;
             end
-            S_FW0B: begin
+            S_FW0B: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 fw_dlo <= sh_r;
                 sh_k <= 5'd0 - {1'b0, fw_addr[3:0]}; sh_mode <= SH_SHR;
                 state <= S_FW0C;
             end
-            S_FW0C: begin
+            S_FW0C: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 fw_dhi <= (fw_addr[3:0] == 4'h0) ? 16'h0 : sh_r[15:0];
                 state <= S_FW1;
             end
@@ -1133,14 +1197,16 @@ module tms34010 (
                 sh_x <= {16'h0, mrd}; sh_k <= {1'b0, pw_sc}; sh_mode <= SH_SHR;
                 state <= S_PW2;
             end
-            S_PW2: begin
+            S_PW2: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 t16 = sh_r[15:0] & pm;                                       // old pixel
                 t16 = rop_en ? (rop_pix(rop, pw_data & pm, t16, pm) & pm) : (pw_data & pm);
                 pw_new <= t16;
                 sh_x <= {16'h0, t16}; sh_k <= {1'b0, pw_sc}; sh_mode <= SH_SHL;
                 state <= (transp && t16 == 16'h0) ? pw_ret : S_PW3;
             end
-            S_PW3: begin
+            S_PW3: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 w_we <= 1'b1; w_wdata <= (mrd & ~pw_pmask) | sh_r[15:0]; w_ret <= pw_ret;
                 state <= S_W0;
             end
@@ -1153,7 +1219,8 @@ module tms34010 (
                 sh_x <= {16'h0, mrd}; sh_k <= {1'b0, pr_sc}; sh_mode <= SH_SHR;
                 state <= S_PR2;
             end
-            S_PR2: begin
+            S_PR2: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 pr_val <= srt_mode ? 16'h0 : (sh_r[15:0] & pm);
                 state  <= pr_ret;
             end
@@ -1163,11 +1230,14 @@ module tms34010 (
                 sh_x <= sxt16(xy_in[31:16]); sh_k <= xy_sh; sh_mode <= SH_SHL;
                 state <= S_XY1;
             end
-            S_XY1: begin
+            S_XY1: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 alu_a <= sh_r; alu_b <= sxt16(xy_in[15:0]) << pxs; alu_op <= A_ADD; alu_cin <= 1'b0;
                 state <= S_XY2;
             end
-            S_XY2: begin
+            // settle: consumes alu_r one state after S_XY1 registered the operands
+            S_XY2: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 alu_a <= alu_r; alu_b <= B_OFFSET;
                 wb_sel <= xy_wb; wb_fl <= FL_NONE; wb_next <= xy_ret;
                 state <= S_ALU;
@@ -1175,13 +1245,19 @@ module tms34010 (
 
             // ---------------- multiply / divide ----------------
             S_MUL1: state <= S_MUL2;              // product registers
-            S_MUL2: begin
+            S_MUL2: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 rfw_en = 1'b1; rfw_idx = ri_d; rfw_val = mul_res[63:32];
                 st[SB_Z] <= (mul_res == 64'd0);
                 if (opc == OP_MPYS) st[SB_N] <= mul_res[63];
                 state <= S_MUL3;
             end
-            S_MUL3: begin
+            // Settle tick: S_MUL2 writes the register file on its own tick, so
+            // without this S_MUL3's write would land one clock later and the
+            // rf -> rf multicycle of 2 would not hold for that pair. mul_a/mul_b
+            // are unchanged, so mul_res is stable across the extra clock.
+            S_MUL3: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 rfw_en = 1'b1; rfw_idx = ri_d | 5'd1; rfw_val = mul_res[31:0];
                 state <= S_CHECK;
             end
@@ -1197,7 +1273,8 @@ module tms34010 (
                     state <= S_DIV2;
                 end
             end
-            S_DIV2: begin
+            S_DIV2: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 state <= S_CHECK;
                 if (div_is_mod) begin
                     rfw_en = 1'b1; rfw_idx = ri_d; rfw_val = T;
@@ -1244,7 +1321,8 @@ module tms34010 (
                     state <= (tb && !blt_mode_fill) ? S_BLT1B : S_BLT1C;
                 end
             end
-            S_BLT1B: begin
+            S_BLT1B: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 blt_saddr <= blt_saddr + sh_r;
                 state <= S_BLT1C;
             end
@@ -1260,7 +1338,8 @@ module tms34010 (
                     state <= (tb && !blt_mode_fill) ? S_BLT1D : S_BLT2;
                 end
             end
-            S_BLT1D: begin
+            S_BLT1D: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 blt_saddr <= blt_saddr + sh_r;
                 state <= S_BLT2;
             end
@@ -1280,7 +1359,8 @@ module tms34010 (
                     state <= S_XY0;
                 end
             end
-            S_BLT2C: begin
+            S_BLT2C: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 // bail if clipped away, window mode 1 -> WV interrupt
                 t32 = T & ~{27'd0, psz - 5'd1};
                 if ($signed(blt_dx) <= 0 || $signed(blt_dy) <= 0) begin
@@ -1301,12 +1381,14 @@ module tms34010 (
                     end else state <= S_BLT_ROW;
                 end
             end
-            S_BLT2D: begin
+            S_BLT2D: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 blt_srow <= blt_srow + sh_r;
                 sh_k <= dp_sh;
                 state <= S_BLT2E;
             end
-            S_BLT2E: begin
+            S_BLT2E: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 blt_drow <= blt_drow + sh_r;
                 state <= S_BLT_ROW;
             end
@@ -1320,7 +1402,8 @@ module tms34010 (
                 sh_x <= {16'h0, pm}; sh_k <= {1'b0, blt_drow[3:0]}; sh_mode <= SH_SHL;   // initial dest mask
                 state <= S_BLT_ROWB;
             end
-            S_BLT_ROWB: begin
+            S_BLT_ROWB: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 blt_dmask <= sh_r;
                 if (blt_mode_fill) state <= S_BLT_DST0;
                 else state <= S_BLT_SRC0;
@@ -1334,7 +1417,8 @@ module tms34010 (
                 blt_swa <= blt_swa + 28'd1;
                 state <= S_BLT_SRC0X;
             end
-            S_BLT_SRC0X: begin
+            S_BLT_SRC0X: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 blt_sw <= sh_r;
                 state <= S_BLT_DST0;
             end
@@ -1373,7 +1457,8 @@ module tms34010 (
                 blt_swa <= blt_swa + 28'd1;
                 state <= S_BLT_SRCNX;
             end
-            S_BLT_SRCNX: begin
+            S_BLT_SRCNX: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 blt_sw <= blt_sw | sh_r;
                 state <= S_BLT_DSTN;
             end
@@ -1404,7 +1489,8 @@ module tms34010 (
                     state <= S_BLT_PIX2;
                 end
             end
-            S_BLT_PIX2: begin
+            S_BLT_PIX2: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 begin
                     logic [31:0] dw, pix, dmask_adv;
                     case (pxs)
@@ -1447,11 +1533,14 @@ module tms34010 (
                     end
                 end
             end
-            S_BLT_WRW: begin
+            // settle: compares blt_x one state after S_BLT_PIX2 incremented it
+            S_BLT_WRW: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 blt_dwa <= blt_dwa + 28'd1;
                 state <= (blt_x == blt_dx) ? S_BLT_FLUSH : S_BLT_PIX;
             end
-            S_BLT_FLUSH: begin
+            S_BLT_FLUSH: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 if (blt_dbit != 5'd0) begin
                     if (blt_dbit != 5'd16 && !(srt_mode && blt_mode_fill)) begin
                         w_addr <= blt_dwa; w_we <= 1'b0; w_srt <= srt_mode; w_ret <= S_BLT_FLUSHR;
@@ -1487,17 +1576,28 @@ module tms34010 (
                 mul_b <= $signed({B_DPTCH[31], B_DPTCH});
                 state <= S_BLT_END2;
             end
-            S_BLT_END2: begin
-                mul_b <= $signed({B_SPTCH[31], B_SPTCH});      // product for DPTCH registers this cycle
-                state <= S_BLT_END3;
-            end
-            S_BLT_END3: begin
-                // mul_res = DYDX.y * DPTCH ; next cycle DYDX.y * SPTCH
+            S_BLT_END2: state <= S_BLT_END3;               // DYDX.y * DPTCH registers this cycle
+            S_BLT_END3: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
+                // mul_res = DYDX.y * DPTCH. The SPTCH operand is handed over here
+                // rather than in S_BLT_END2 so that mul_p is not reloaded with the
+                // next product on this state's settle tick.
                 if (blt_dst_lin) begin rfw_en = 1'b1; rfw_idx = 5'd28; rfw_val = B_DADDR + mul_res[31:0]; end
                 else begin rfw_en = 1'b1; rfw_idx = 5'd28; rfw_val = {B_DADDR[31:16] + B_DYDX[31:16], B_DADDR[15:0]}; end
-                state <= S_BLT_END4;
+                mul_b <= $signed({B_SPTCH[31], B_SPTCH});
+                state <= S_BLT_END3B;
             end
-            S_BLT_END4: begin
+            // Same role S_BLT_END2 plays for S_BLT_END3: mul_p takes DYDX.y *
+            // SPTCH on this clock, so S_BLT_END4's acting tick is two clocks
+            // after the product last changed -- which is what lets the SDC give
+            // the DSP output two clocks to the register file.
+            S_BLT_END3B: state <= S_BLT_END4;
+            // Settle tick: S_BLT_END3 wrote DADDR on the previous clock. Without
+            // it these two register-file writes are one clock apart and the
+            // rf -> rf multicycle of 2 would not hold. mul_b was set in
+            // S_BLT_END2, so mul_res (DYDX.y * SPTCH) is stable across both.
+            S_BLT_END4: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 if (!blt_mode_fill) begin
                     if (blt_src_lin) begin rfw_en = 1'b1; rfw_idx = 5'd30; rfw_val = B_SADDR + mul_res[31:0]; end
                     else begin rfw_en = 1'b1; rfw_idx = 5'd30; rfw_val = {B_SADDR[31:16] + B_DYDX[31:16], B_SADDR[15:0]}; end
@@ -1506,7 +1606,11 @@ module tms34010 (
             end
 
             // ---------------- execute ----------------
-            S_EXEC: begin
+            // One settle clock before acting: every capture below (operand
+            // registers, rfw writes, next-state) reads the register-file ports
+            // and the opcode-selected action mux, cones that need two clocks.
+            S_EXEC: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 state <= S_CHECK;     // default: single-step instruction
                 // defaults for the shared units
                 alu_a <= rdv; alu_b <= rsv; alu_op <= A_ADD; alu_cin <= 1'b0;
@@ -1616,8 +1720,20 @@ module tms34010 (
                 OP_RL_K:  begin sh_mode <= SH_ROL; wb_fl <= FL_SHZ; state <= S_SH; end
                 OP_RL_R:  begin sh_mode <= SH_ROL; sh_k <= rsv[4:0]; wb_fl <= FL_SHZ; state <= S_SH; end
                 OP_LMO: begin
-                    st[SB_Z] <= (rsv == 32'd0);
-                    rfw_en = 1'b1; rfw_idx = ri_d; rfw_val = {26'd0, lzc(rsv)};
+                    // Two S_EXEC passes. The first captures Rs into the shifter
+                    // operand register -- that cone is the 32:1 read mux alone;
+                    // the second counts from sh_x, which the SDC gives two
+                    // clocks (sh_x written on an S_EXEC acting tick, read on the
+                    // next one, one mph settle apart). Doing both in one tick
+                    // put the read mux and the leading-zero count in series in a
+                    // single rf -> rf window, which no honest multicycle covers.
+                    if (istep == 4'd0) begin
+                        sh_x <= rsv;
+                        st[SB_Z] <= (rsv == 32'd0);
+                        istep <= 4'd1; state <= S_EXEC;
+                    end else begin
+                        rfw_en = 1'b1; rfw_idx = ri_d; rfw_val = {26'd0, lzc(sh_x)};
+                    end
                 end
                 OP_MPYS, OP_MPYU: begin
                     t32 = rsv & wmask(fsize(st[10:6]));

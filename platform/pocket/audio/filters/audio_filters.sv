@@ -28,7 +28,14 @@
 
 module audio_filters
     #(
-         parameter CLK_RATE = 12288000
+         parameter CLK_RATE = 12288000,
+         // MONO=1 when the core drives both channels with the same samples. The
+         // right-hand dc_blocker and audio_mix then compute bit-identical results
+         // to the left-hand pair -- same inputs, same parameters, same reset state
+         // (pre_out = 0) -- so one chain is instantiated and mirrored. Provably
+         // output-identical, and it returns ~157 ALUTs. Defaults to 0, so every
+         // other core keeps the stereo behaviour unchanged.
+         parameter MONO     = 0
      ) (
          input  wire        clk,
          input  wire        reset,
@@ -160,45 +167,39 @@ module audio_filters
                    .dout        ( adl         )
                );
 
-    wire [15:0] adr;
-    dc_blocker dcb_r
-               (
-                   .clk         ( clk         ),
-                   .ce          ( sample_ce   ),
-                   .sample_rate ( sample_rate ),
-                   .mute        ( ~a_en2      ),
-                   .din         ( acr         ),
-                   .dout        ( adr         )
-               );
-
     wire [15:0] audio_l_pre;
-    audio_mix audmix_l
-              (
-                  .clk         ( clk         ),
-                  .ce          ( sample_ce   ),
-                  .att         ( att         ),
-                  .mix         ( mix         ),
 
-                  .core_audio  ( adl         ),
-                  .pre_in      ( audio_r_pre ),
-
-                  .pre_out     ( audio_l_pre ),
-                  .out         ( audio_l     )
-              );
-
-    wire [15:0] audio_r_pre;
-    audio_mix audmix_r
-              (
-                  .clk         ( clk         ),
-                  .ce          ( sample_ce   ),
-                  .att         ( att         ),
-                  .mix         ( mix         ),
-
-                  .core_audio  ( adr         ),
-                  .pre_in      ( audio_l_pre ),
-
-                  .pre_out     ( audio_r_pre ),
-                  .out         ( audio_r     )
-              );
+    generate
+        if (MONO) begin : g_mono
+            // One chain, mirrored. audmix_l's pre_in is its own registered
+            // pre_out (audio_mix registers pre_out, so this is a registered
+            // loop, not a combinational one) -- in the stereo build it would be
+            // audio_r_pre, which for identical channels holds the identical
+            // value on every clock.
+            audio_mix audmix_l (
+                .clk ( clk ), .ce ( sample_ce ), .att ( att ), .mix ( mix ),
+                .core_audio ( adl ), .pre_in ( audio_l_pre ),
+                .pre_out ( audio_l_pre ), .out ( audio_l )
+            );
+            assign audio_r = audio_l;
+        end else begin : g_stereo
+            wire [15:0] adr;
+            dc_blocker dcb_r (
+                .clk ( clk ), .ce ( sample_ce ), .sample_rate ( sample_rate ),
+                .mute ( ~a_en2 ), .din ( acr ), .dout ( adr )
+            );
+            wire [15:0] audio_r_pre;
+            audio_mix audmix_l (
+                .clk ( clk ), .ce ( sample_ce ), .att ( att ), .mix ( mix ),
+                .core_audio ( adl ), .pre_in ( audio_r_pre ),
+                .pre_out ( audio_l_pre ), .out ( audio_l )
+            );
+            audio_mix audmix_r (
+                .clk ( clk ), .ce ( sample_ce ), .att ( att ), .mix ( mix ),
+                .core_audio ( adr ), .pre_in ( audio_l_pre ),
+                .pre_out ( audio_r_pre ), .out ( audio_r )
+            );
+        end
+    endgenerate
 
 endmodule

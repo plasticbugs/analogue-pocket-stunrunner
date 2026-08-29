@@ -41,6 +41,28 @@ A block must never gate `clk`; it samples its `cen` and may also take a
 `stall` input that holds it in the current cycle (used by cores whose memory
 lives in SDRAM).
 
+**A `cen` does not buy you a slow combinational path.** In a micro-sequenced
+core the enable only *starts* an instruction; the internal FSM then advances
+on every `clk`. So a cone that needs more than one 10.4 ns clock must be given
+a real extra clock, not just a `set_multicycle_path`. The pattern used in the
+GSP (`mph`, `alu_ph`) and the ADSP (`S_DEC`) is a settle tick on the state
+that captures the slow result:
+
+```systemverilog
+S_SLOW: if (!mph) mph <= 1'b1;      // settle: cone resolves this clock
+        else begin mph <= 1'b0;     // act: capture it the next
+            ...
+        end
+```
+
+This costs nothing in emulated time — the engine is enable-throttled, so the
+extra clock lands inside slack the instruction already had — and it makes the
+matching `set_multicycle_path -setup 2 -hold 1` an honest description of the
+silicon rather than a mask over a violation. Any multicycle in
+`projects/stunrun_pocket.sdc` must carry a comment naming the registers'
+write sites and the state distance that guarantees the budget. See
+`docs/verification.md` for the full procedure.
+
 ## Memory request interface (for anything that touches SDRAM)
 
 ```systemverilog
@@ -58,6 +80,14 @@ until `m_ack`. The controller (`rtl/sdram_ctrl.sv`) gives each client its own
 port with these signals; random clients are served round-robin, the display
 line fetch uses the separate burst port (chunked so a client never waits more
 than 32 words).
+
+`m_req` is a genuinely single-cycle input to the controller -- it can rise on
+the clock before the controller happens to be sitting in `S_IDLE` -- so nothing
+on the path from it may be multicycled. The arbitration is therefore split
+across two states: `S_IDLE` registers the winning client index (`cur <= pick`)
+and `S_ARB` drives the row address from that register (`c_addr[cur]`) with the
+ACTIVE command. A random access costs 9 clocks rather than 8; every client is
+enable-throttled well below that rate.
 
 ## SDRAM map (byte addresses)
 

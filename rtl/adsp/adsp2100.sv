@@ -305,7 +305,7 @@ module adsp2100 (
     // ---------------------------------------------------------------------
     // Decode (combinational on the latched instruction `ir`)
     // ---------------------------------------------------------------------
-    typedef enum logic [2:0] {S_IDLE, S_WAIT, S_LATCH, S_ISSUE, S_MEM, S_WB} state_e;
+    typedef enum logic [2:0] {S_IDLE, S_WAIT, S_LATCH, S_DEC, S_ISSUE, S_MEM, S_WB} state_e;
     state_e st;
 
     logic [23:0] ir;
@@ -896,8 +896,11 @@ module adsp2100 (
                 S_WAIT:  st <= S_LATCH;
                 S_LATCH: begin
                     ir <= pm_a_q;
-                    st <= S_ISSUE;
+                    st <= S_DEC;
                 end
+                // settle: gives the ir decode cone (shifter setup, DAG fields)
+                // a second clock before S_ISSUE captures anything ir-derived
+                S_DEC:   st <= S_ISSUE;
                 S_ISSUE: begin
                     // ---- loop end (MAME: before executing the instruction) ----
                     if (in_loop_end) begin

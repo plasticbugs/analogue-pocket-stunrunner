@@ -114,7 +114,9 @@ module audio_mixer
     //! ------------------------------------------------------------------------
     logic [15:0] audio_l, audio_r;
 
-    audio_filters audio_filters
+    // STEREO=0 means core_ar is tied to core_al above, so the filter's two
+    // channels are bit-identical -- build one and mirror it.
+    audio_filters #(.MONO(STEREO == 0)) audio_filters
                   (
                       .clk       ( audio_mclk ),
                       .reset     ( reset      ),
