@@ -288,7 +288,7 @@ module sdram_ctrl #(
                     b_chunk  <= b_chunk + 6'd1;
                     b_gap    <= burst_slow ? 3'd4 : 3'd1;
                     // stop at: end of burst, end of chunk, end of SDRAM row
-                    if (b_remain == 10'd1 || b_chunk == 6'(BURST_CHUNK - 1) || b_next[9:1] == 9'h1ff) begin
+                    if (b_remain == 10'd1 || b_chunk == 6'(BURST_CHUNK - 10'd1) || b_next[9:1] == 9'h1ff) begin
                         state  <= S_BEND;
                         wait_n <= 3'd1;
                     end
