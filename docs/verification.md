@@ -101,3 +101,57 @@ is not here has not been verified.
   the Pocket scaler do) makes the title-screen frame a 0-pixel, dy=0 match to
   MAME. The GSP's own DPYADR/DE bookkeeping was never wrong — the first
   visible line fetches VRAM row 0x3c in both MAME and the RTL.
+
+## The attract-demo reboot (open)
+
+Symptom on hardware: the machine reboots when the title screen gives way to the
+3D attract demo. Reproduces in `sim/run_system.sh` at frame 713.
+
+The reboot is the game's own error path, not a crash we cause directly.
+`SomCopyToGsp` (68k 0x2f0ae) reads the stream length from the first word of the
+ADSP's SOM block, streams that many words to the GSP through the host port, and
+then checks the block terminator:
+
+```c
+sVar1 = *param_1;                          // length from the SOM block
+GspWriteWords(param_1 + 1, (int)sVar1);
+if ((param_1 + 1)[sVar1 + -1] != -1) HaltForWatchdog();
+```
+
+At frame 706 that length reads **-1300**. `GspWriteWords` takes it signed, so the
+loop is unbounded: 34,385 words that wrap past the top of the GSP address space
+and overwrite the interrupt vectors living in the top of VRAM. The next display
+interrupt vectors through ffffffff to fffffff0, the GSP runs away through empty
+memory, the 68k halts deliberately, and the watchdog resets the machine.
+
+The -1300 is not corruption. The 68k is reading a half-built buffer: our ADSP
+had written ~716 of the ~7,451 words the block needs.
+
+**Root cause is upstream of all three CPUs.** Each is verified over the failing
+frames: GSP windows w7 (709-716) and w8 (700-710) replay exactly with matching
+VRAM; ADSP window w3 (699-707) is 961,476 instructions with 0 mismatches and 0
+end-of-window differences in registers, data and program memory. The 68k runs
+its own code faithfully.
+
+What actually differs is *when the demo starts*:
+
+| | 3D demo begins |
+|---|---|
+| MAME | frame 558-559: the 68k uploads 483 words to ADSP data RAM, triggers, and the ADSP produces ~1,800 SOM words per frame from then on, retriggered every 3 frames |
+| ours | never: the ADSP is idle from frame 400 to 705, then runs briefly at 706 and the machine dies |
+
+So our machine reaches the demo about 147 frames late and in a state where the
+68k reads a buffer the ADSP has not filled. Finding why needs a 68k-level
+comparison against MAME across the attract sequence (roughly frames 260-560),
+which no tool covers yet: `compare_pcs.py` exists but there is no MAME 68k
+window tracer to feed it.
+
+Two traps recorded so they are not hit again:
+
+- **MAME Lua taps must be held in a GLOBAL table.** A chunk-local one is
+  garbage-collected when the script chunk ends and every tap silently stops
+  firing -- reporting zeros that look like real measurements. This invalidated
+  several results here before it was spotted.
+- **`dbg_68k_pc` in the system bench is the address bus, not the PC.** Comparing
+  it against MAME's PC shows nonsense (stack addresses like fffffe18). Use
+  `dbg_68k_exepc`.

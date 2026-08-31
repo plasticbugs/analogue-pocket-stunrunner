@@ -6,6 +6,15 @@
 --   START    "reset"  : window starts when the 68k releases the ADSP reset
 --            "trig"   : window starts at the first 68k trigger write (0x80bffe) after
 --                       frame MINFRAME while the ADSP has empty stacks (SSTAT=0x55, PCSP=0)
+--            "idle"   : window starts at the first frame boundary after MINFRAME where
+--                       the ADSP is parked in its top-level wait loop (PC in IDLEPC..
+--                       IDLEPC+4) with every stack empty. Use this to reach a window the
+--                       "trig" mode cannot: during the attract demo the DSP is busy
+--                       whenever the 68k triggers it, so "trig" never fires, but the DSP
+--                       still passes through the wait loop between jobs. Starting there
+--                       needs no stack capture -- the dump restores a quiescent machine
+--                       and the io log carries the 68k writes that follow.
+--   IDLEPC   first instruction of that wait loop (default 0x13: AR = DM($1FFF))
 --   MINFRAME frame after which START=trig may fire (default 900)
 --   PCFRAMES frames traced PC-only (adsp_trace_pc.txt) before the register trace (default 0)
 --   FRAMES   frames traced with full registers (adsp_trace.txt) after that (default 1)
@@ -29,6 +38,7 @@ local mode = os.getenv("START") or "trig"
 local minframe = tonumber(os.getenv("MINFRAME") or "900")
 local nframes = tonumber(os.getenv("FRAMES") or "1")
 local pcframes = tonumber(os.getenv("PCFRAMES") or "0")
+local idlepc = tonumber(os.getenv("IDLEPC") or "0x13")
 local phase = 0   -- 1 = PC-only trace, 2 = register trace
 local dbg = m.debugger
 local cpu = m.devices[":mainpcb:maincpu"]
@@ -151,6 +161,15 @@ end)
 
 emu.register_frame_done(function()
   frames = frames + 1
+  -- idle-boundary start: the DSP is between jobs, so every stack is empty and
+  -- the state dump alone is enough to restart it in the bench
+  if not active and not done and mode == "idle" and frames >= minframe then
+    local pc = adsp.state["PC"].value
+    if pc >= idlepc and pc <= idlepc + 4
+       and adsp.state["SSTAT"].value == 0x55 and adsp.state["PCSP"].value == 0 then
+      start_window()
+    end
+  end
   if active then
     frames_after = frames_after + 1
     if phase == 1 and frames_after == pcframes then switch_phase() end

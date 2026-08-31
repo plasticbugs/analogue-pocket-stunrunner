@@ -41,6 +41,9 @@ module tb_system_top (
     output logic [15:0] dbg_hstctll, dbg_hstctlh,
     output logic        dbg_gsp_instr,
     output logic        dbg_som_wr, dbg_adsp_wait, dbg_adsp_instr,
+    output logic        dbg_dm_we_68k,
+    output logic [12:0] dbg_dm_addr_68k,
+    output logic [15:0] dbg_dm_wdata_68k,
     output logic [15:0] dbg_gsp_intpend, dbg_gsp_intenb, dbg_gsp_control,
     output logic [31:0] dbg_gsp_fraddr, dbg_gsp_frval, dbg_gsp_intvec,
     output logic [15:0] dbg_gsp_dpyint, dbg_gsp_vc, dbg_gsp_dpyctl,
@@ -86,6 +89,9 @@ module tb_system_top (
     assign dbg_gsp_instr = core.gsp.dbg_instr;
     assign dbg_som_wr = core.io_wr && (core.io_addr[2:0] == 3'd2);
     assign dbg_adsp_wait = core.io_wait;
+    assign dbg_dm_we_68k    = core.main.dm_we;
+    assign dbg_dm_addr_68k  = core.main.dm_addr;
+    assign dbg_dm_wdata_68k = core.main.dm_wdata;
     assign dbg_adsp_instr = core.adsp.dbg_instr_done;
     assign dbg_gsp_intpend = core.gsp.io[18];
     assign dbg_gsp_fraddr  = core.gsp.fr_addr;

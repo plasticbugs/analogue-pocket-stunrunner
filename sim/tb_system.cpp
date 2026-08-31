@@ -187,6 +187,14 @@ int main(int argc, char **argv) {
         }
         // TB_GSPRING: keep the last GSP PCs and dump them the moment the PC
         // leaves ROM (0xfffxxxxx), which is how the attract-demo crash shows up.
+        // TB_ADSPIN: what our 68k feeds the ADSP, in MAME's adsp_io.txt "X" format
+        // (offset, data), so the two streams can be diffed directly.
+        if (getenv("TB_ADSPIN") && frame >= 699 && frame <= 707) {
+            static FILE *xf = nullptr;
+            if (!xf) xf = fopen("../artifacts/adsp_in_rtl.txt", "w");
+            if (top->dbg_dm_we_68k) fprintf(xf, "X %04x %04x\n", top->dbg_dm_addr_68k, top->dbg_dm_wdata_68k);
+            if (frame == 707) fflush(xf);
+        }
         // TB_ADSPRATE: ADSP throughput. At 8 MHz it should retire ~133,000
         // instructions per 60.2 Hz frame; io_wait counts clocks stalled waiting
         // for a SIM word from SDRAM (the prefetch is only one word deep).
