@@ -40,8 +40,10 @@ module tb_system_top (
     output logic  [4:0] dbg_gio_addr,
     output logic [15:0] dbg_hstctll, dbg_hstctlh,
     output logic        dbg_gsp_instr,
+    output logic        dbg_som_wr, dbg_adsp_wait, dbg_adsp_instr,
     output logic [15:0] dbg_gsp_intpend, dbg_gsp_intenb, dbg_gsp_control,
     output logic [31:0] dbg_gsp_fraddr, dbg_gsp_frval, dbg_gsp_intvec,
+    output logic [15:0] dbg_gsp_dpyint, dbg_gsp_vc, dbg_gsp_dpyctl,
     output logic [31:0] dbg_68k_exepc,
     output logic        dbg_line_late,
     output logic [15:0] dbg_vcount, dbg_dpyadr, dbg_dpystrt, dbg_vsblnk, dbg_veblnk,
@@ -82,10 +84,16 @@ module tb_system_top (
     assign dbg_adsp_trig = core.main.dm_we && core.main.dm_addr == 13'h1fff; assign dbg_adsp_int = core.adsp_int; assign dbg_adsp_int_clr = core.adsp_int_clr;
     assign dbg_hstctll = core.gsp.io[15]; assign dbg_hstctlh = core.gsp.io[16];
     assign dbg_gsp_instr = core.gsp.dbg_instr;
+    assign dbg_som_wr = core.io_wr && (core.io_addr[2:0] == 3'd2);
+    assign dbg_adsp_wait = core.io_wait;
+    assign dbg_adsp_instr = core.adsp.dbg_instr_done;
     assign dbg_gsp_intpend = core.gsp.io[18];
     assign dbg_gsp_fraddr  = core.gsp.fr_addr;
     assign dbg_gsp_frval   = core.gsp.fr_val;
     assign dbg_gsp_intvec  = core.gsp.int_vec;
+    assign dbg_gsp_dpyint  = core.gsp.io[10];
+    assign dbg_gsp_vc      = core.gsp.vc;
+    assign dbg_gsp_dpyctl  = core.gsp.io[8];
     assign dbg_gsp_intenb  = core.gsp.io[17];
     assign dbg_gsp_control = core.gsp.io[11];
     assign dbg_68k_exepc = core.main.cpu.exe_pc;

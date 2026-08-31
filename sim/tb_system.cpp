@@ -12,7 +12,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
-#include <vector>\n#include <map>\n#include <algorithm>
+#include <vector>
+#include <map>
+#include <algorithm>
 #include <string>
 #include <zlib.h>
 
@@ -185,6 +187,136 @@ int main(int argc, char **argv) {
         }
         // TB_GSPRING: keep the last GSP PCs and dump them the moment the PC
         // leaves ROM (0xfffxxxxx), which is how the attract-demo crash shows up.
+        // TB_ADSPRATE: ADSP throughput. At 8 MHz it should retire ~133,000
+        // instructions per 60.2 Hz frame; io_wait counts clocks stalled waiting
+        // for a SIM word from SDRAM (the prefetch is only one word deep).
+        if (getenv("TB_ADSPRATE")) {
+            static long ins = 0, wait = 0, somw = 0; static int lastf = -1;
+            if (top->dbg_adsp_instr) ins++;
+            if (top->dbg_adsp_wait) wait++;
+            if (top->dbg_som_wr) somw++;
+            if (frame != lastf) {
+                if (lastf >= 703 && lastf <= 709)
+                    printf("frame %3d: adsp_instr=%7ld  io_wait_clocks=%8ld (%4.1f%% of frame)  som_writes=%ld\n",
+                           lastf, ins, wait, 100.0*wait/1594636.0, somw);
+                ins = wait = somw = 0; lastf = frame;
+            }
+        }
+        // TB_ADSPACT: is the ADSP being asked to work, and is it answering?
+        //   trig  = 68k writes 0x80bffe (the ADSP IRQ trigger)
+        //   int   = ADSP -> 68k interrupt
+        //   somw  = ADSP SOMLATCH writes (its 3D output)
+        // Plus a PC histogram so we can see whether it is computing or idling.
+        if (getenv("TB_ADSPACT")) {
+            static long trig = 0, intr = 0, somw = 0; static int lastf = -1;
+            static int pt = 0, pi = 0; static std::map<uint32_t,long> h; static bool shown = false;
+            if (top->dbg_adsp_trig && !pt) trig++;
+            pt = top->dbg_adsp_trig;
+            if (top->dbg_adsp_int && !pi) intr++;
+            pi = top->dbg_adsp_int;
+            if (top->dbg_som_wr) somw++;
+            if (frame >= 700 && frame <= 706) h[top->dbg_adsp_pc]++;
+            if (frame != lastf) {
+                if (lastf >= 698 && lastf <= 709)
+                    printf("frame %3d: adsp_trig=%ld adsp_int=%ld som_writes=%ld\n", lastf, trig, intr, somw);
+                trig = intr = somw = 0; lastf = frame;
+            }
+            if (frame >= 707 && !shown && !h.empty()) {
+                shown = true;
+                std::vector<std::pair<long,uint32_t>> v;
+                for (auto &kv : h) v.push_back({kv.second, kv.first});
+                std::sort(v.rbegin(), v.rend());
+                long tot = 0; for (auto &x : v) tot += x.first;
+                printf("ADSP PC histogram frames 700-706 (%ld samples):\n", tot);
+                for (size_t i = 0; i < v.size() && i < 10; i++)
+                    printf("   %04x  %8ld  %4.1f%%\n", v[i].second, v[i].first, 100.0*v[i].first/tot);
+                fflush(stdout);
+            }
+        }
+        // TB_SOMBANK: dump the head of both SOM banks when the bad length is
+        // latched. The 68k reads bank adsp_bank; the ADSP fills the other one.
+        // If the sane length is sitting in the bank we are NOT reading, the bug
+        // is the bank select, not the ADSP's arithmetic.
+        if (getenv("TB_SOMBANK")) {
+            static bool done = false;
+            uint16_t len = top->rootp->vlSymsp->TOP__tb_system_top__core.__PVT__main__DOT__wram[0x2da7];
+            if (!done && (int16_t)len < 0) {
+                done = true;
+                auto &som = top->rootp->vlSymsp->TOP__tb_system_top__core.som__DOT__mem;
+                printf("frame %d: bad length %d latched; adsp_bank=%d\n", frame, (int16_t)len,
+                       top->rootp->vlSymsp->TOP__tb_system_top__core.__PVT__adsp_bank);
+                for (int b = 0; b < 2; b++) {
+                    printf("  SOM bank %d head:", b);
+                    for (int i = 0; i < 8; i++) printf(" %04x", som[b*0x2000 + i]);
+                    printf("\n");
+                }
+                fflush(stdout);
+            }
+        }
+        // TB_SOMLEN: SomCopyToGsp reads the stream length from the first word of
+        // the ADSP's SOM block and stashes it at 68k RAM 0xffdb4e (wram[0x2da7]).
+        // A bad length there is what drives GspWriteWords off the end of memory.
+        if (getenv("TB_SOMLEN")) {
+            static uint16_t prev = 0xdead; static int n = 0;
+            uint16_t v = top->rootp->vlSymsp->TOP__tb_system_top__core.__PVT__main__DOT__wram[0x2da7];
+            if (v != prev && n < 40) {
+                n++;
+                printf("frame %3d: SOM stream length = %5d (0x%04x)%s\n", frame, (int16_t)v, v,
+                       ((int16_t)v < 0 || v > 16000) ? "   <-- BAD" : "");
+                fflush(stdout); prev = v;
+            }
+        }
+        // TB_FLAGS: the two command-buffer flags and the trigger word. The 68k
+        // waits for a flag to read 0 ("GSP consumed it"); the GSP waits for one
+        // to read ffff ("buffer ready"). Any other value deadlocks both.
+        if (getenv("TB_FLAGS")) {
+            static int lastf = -1;
+            if (frame != lastf) {
+                if (lastf >= 698 && lastf <= 712) {
+                    auto &v = top->rootp->vlSymsp->TOP__tb_system_top.chip__DOT__mem;
+                    printf("frame %3d: buf0=%04x buf1=%04x trig=%04x  gsp_pc=%08x 68k=%08x\n",
+                           lastf, v[0x100000u+0x39fc0], v[0x100000u+0x3cfc0], v[0x100000u+0x37167],
+                           top->dbg_gsp_pc, top->dbg_68k_exepc);
+                    fflush(stdout);
+                }
+                lastf = frame;
+            }
+        }
+        // TB_GSPHIST: where does the GSP spend the stall frames?
+        if (getenv("TB_GSPHIST")) {
+            static std::map<uint32_t,long> h; static uint32_t pp = 0; static bool printed = false;
+            if (frame >= 705 && frame <= 709 && top->dbg_gsp_instr && top->dbg_gsp_pc != pp) {
+                h[top->dbg_gsp_pc]++; pp = top->dbg_gsp_pc;
+            }
+            if (frame >= 710 && !printed && !h.empty()) {
+                printed = true;
+                std::vector<std::pair<long,uint32_t>> v;
+                for (auto &kv : h) v.push_back({kv.second, kv.first});
+                std::sort(v.rbegin(), v.rend());
+                long tot = 0; for (auto &x : v) tot += x.first;
+                printf("GSP PC histogram frames 705-709 (%ld instructions):\n", tot);
+                for (size_t i = 0; i < v.size() && i < 12; i++)
+                    printf("   %08x  %8ld  %4.1f%%\n", v[i].second, v[i].first, 100.0*v[i].first/tot);
+                fflush(stdout);
+            }
+        }
+        // TB_DIWHY: every DI fire (with the vc it matched at) and every change
+        // of DPYINT / DPYCTL, so a missed display interrupt can be explained.
+        if (getenv("TB_DIWHY") && frame >= 700 && frame <= 712) {
+            static uint16_t ip = 0, dpyint = 0xffff, dpyctl = 0xffff;
+            if ((top->dbg_gsp_intpend & 0x0400) && !(ip & 0x0400))
+                printf("frame %3d: DI fired at vc=%d (dpyint=%d dpyctl=%04x)\n",
+                       frame, top->dbg_gsp_vc, top->dbg_gsp_dpyint, top->dbg_gsp_dpyctl);
+            ip = top->dbg_gsp_intpend;
+            if (top->dbg_gsp_dpyint != dpyint) {
+                printf("frame %3d: DPYINT %d -> %d   (vc now %d)\n", frame, dpyint, top->dbg_gsp_dpyint, top->dbg_gsp_vc);
+                dpyint = top->dbg_gsp_dpyint;
+            }
+            if (top->dbg_gsp_dpyctl != dpyctl) {
+                printf("frame %3d: DPYCTL %04x -> %04x\n", frame, dpyctl, top->dbg_gsp_dpyctl);
+                dpyctl = top->dbg_gsp_dpyctl;
+            }
+        }
         // TB_IPS: GSP instructions per frame. The core is throttled to one
         // instruction per cen_6m (16 clocks); if the FSM needs more clocks than
         // that on average, the emulated GSP runs slower than the real 6 MHz part
