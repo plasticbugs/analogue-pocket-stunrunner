@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
                 words = 0; dones = 0;
             }
         }
-        if (top->cen_pix) {
+        if (top->cen_out) {   // one pulse per emitted pixel (clk/4 scan-out)
             if (top->vsync && !prev_vs) { frames++; y = -1; }
             if (top->de && !prev_de) { y++; x = 0; }
             if (top->de && frames == 2 && y >= 0 && y < 240 && x < 512) {

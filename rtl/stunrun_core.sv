@@ -39,7 +39,7 @@ module stunrun_core (
     input  logic  [7:0] stick_x, stick_y,                             // 0x80 centre
     input  logic  [7:0] sw1,
 
-    // video (valid on cen_pix)
+    // video (valid on cen_pix -- one pulse per emitted pixel, clk/4)
     output logic        cen_pix,
     output logic  [7:0] r, g, b,
     output logic        hsync, vsync, hblank, vblank, de,
@@ -65,9 +65,10 @@ module stunrun_core (
     // clocks and resets
     // ------------------------------------------------------------------------
     logic cen_8m, cen_6m, cen_vid, cen_ym, cen_oki;
+    logic cen_pix_10m;   // 10 MHz machine pixel rate; the core's cen_pix output is the clk/4 scan-out beat
     clk_enables cen (
         .clk(clk), .reset(hw_reset),
-        .cen_8m(cen_8m), .cen_6m(cen_6m), .cen_vid(cen_vid), .cen_pix(cen_pix),
+        .cen_8m(cen_8m), .cen_6m(cen_6m), .cen_vid(cen_vid), .cen_pix(cen_pix_10m),
         .cen_snd(), .cen_ym(cen_ym), .cen_oki(cen_oki)
     );
     logic sd_ready, wdog_reset;
@@ -219,7 +220,7 @@ module stunrun_core (
         .r_dpyctl(r_dpyctl), .r_dpystrt(r_dpystrt), .r_dpytap(r_dpytap), .r_dpyadr(r_dpyadr),
         .hblank(), .vblank(),
         .dbg_pc(dbg_gsp_pc), .dbg_halted(), .dbg_instr(), .dbg_idle(),
-        .dbg_force_di(1'b0), .dbg_int_inhibit(1'b0), .dbg_force_int(1'b0), .dbg_hold(1'b0)
+        .dbg_force_di(1'b0), .dbg_int_inhibit(1'b0), .dbg_force_int(1'b0), .dbg_int_pending(1'b0), .dbg_hold(1'b0)
     );
 
     gsp_bus gbus (
@@ -234,7 +235,7 @@ module stunrun_core (
     );
 
     gsp_video video (
-        .clk(clk), .reset(mreset), .cen_pix(cen_pix),
+        .clk(clk), .reset(mreset), .cen_pix(cen_pix_10m), .cen_out(cen_pix),
         .hcount(hcount), .vcount(vcount), .line_start(line_start),
         .r_hesync(r_hesync), .r_heblnk(r_heblnk), .r_hsblnk(r_hsblnk),
         .r_vesync(r_vesync), .r_veblnk(r_veblnk), .r_vsblnk(r_vsblnk),

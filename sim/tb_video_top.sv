@@ -19,6 +19,7 @@ module tb_video_top (
     input  logic  [9:0] pal_waddr,
     input  logic [15:0] pal_wdata,
     // video out
+    output logic        cen_out,
     output logic  [7:0] r, g, b,
     output logic        hsync, vsync, de,
     output logic        line_late,
@@ -92,7 +93,7 @@ module tb_video_top (
 
     logic hb, vb;
     gsp_video video (
-        .clk(clk), .reset(reset | ~sd_ready), .cen_pix(cen_pix),
+        .clk(clk), .reset(reset | ~sd_ready), .cen_pix(cen_pix), .cen_out(cen_out),
         .hcount(hcount), .vcount(vcount), .line_start(line_start),
         .r_hesync(r_hesync), .r_heblnk(r_heblnk), .r_hsblnk(r_hsblnk),
         .r_vesync(r_vesync), .r_veblnk(r_veblnk), .r_vsblnk(r_vsblnk),

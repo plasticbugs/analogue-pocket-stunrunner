@@ -1054,15 +1054,19 @@ module core_top
     assign video_preset = (aspect_sel == 2'd1) ? 3'd1 : 3'd0;
 
     //! ------------------------------------------------------------------
-    //! Video: 10 MHz pixels on clk_sys, re-timed onto clk_vid (24 MHz, same
-    //! PLL). The pixel enable is a phase accumulator so pixels are not on a
-    //! fixed clk_vid grid: hold each pixel on clk_sys and let the scaler's
-    //! DE/clock pair sample it. The Pocket samples video_rgb on the rising
-    //! edge of video_rgb_clock, so a pixel that lasts 9.6 clk_sys cycles is
-    //! seen 2-3 times at 24 MHz; the scaler sizes by the declared width
-    //! (512) and DE length, and drops the repeats (this is how it also
-    //! handles the 6.144 MHz Xenophobe pixels).
+    //! Video: the core now emits exactly one pixel per clk_vid (24 MHz = clk_sys/4),
+    //! so this is a retiming register onto the video clock, not a rate change --
+    //! the same arrangement Punch-Out!!, Xenophobe and Time Pilot use, and both
+    //! clocks come from the one PLL so the SDC can prove it.
     //!
+    //! It used to hold each 10 MHz pixel and let clk_vid sample it 2-3 times, on
+    //! the assumption that the scaler "sizes by the declared width and drops the
+    //! repeats". It does not: the Pocket counts DE-high video_rgb_clock cycles,
+    //! so a 512-pixel line arrived as ~1229 of them, and against the 512 declared
+    //! in video.json only the left ~40% of the picture survived. Simulation could
+    //! not see it -- the benches count pixels at the core's own pixel strobe, so
+    //! they rendered a correct 512-wide frame either way. gsp_video now reads the
+    //! (already line-buffered) line out back-to-back at clk/4 instead.
     //! ------------------------------------------------------------------
     reg [7:0] vr_q, vg_q, vb_q;
     reg       vhs_q, vvs_q, vde_q;

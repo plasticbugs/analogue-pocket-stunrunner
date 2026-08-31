@@ -29,6 +29,7 @@ module tb_gsp_top (
     input  logic        dbg_force_di,
     input  logic        dbg_int_inhibit,
     input  logic        dbg_force_int,
+    input  logic        dbg_int_pending,
     input  logic        dbg_hold,
     output logic        dbg_idle,
     input  logic        cache_flush,
@@ -55,7 +56,7 @@ module tb_gsp_top (
         .r_hesync(r0), .r_heblnk(r1), .r_hsblnk(r2), .r_htotal(r3), .r_vesync(r4), .r_veblnk(r5),
         .r_vsblnk(r6), .r_vtotal(r7), .r_dpyctl(r8), .r_dpystrt(r9), .r_dpytap(r10), .r_dpyadr(r11),
         .dbg_pc(dbg_pc), .dbg_halted(dbg_halted), .dbg_instr(dbg_instr),
-        .dbg_force_di(dbg_force_di), .dbg_int_inhibit(dbg_int_inhibit), .dbg_force_int(dbg_force_int),
+        .dbg_force_di(dbg_force_di), .dbg_int_inhibit(dbg_int_inhibit), .dbg_force_int(dbg_force_int), .dbg_int_pending(dbg_int_pending),
         .dbg_hold(dbg_hold), .dbg_idle(dbg_idle)
     );
 

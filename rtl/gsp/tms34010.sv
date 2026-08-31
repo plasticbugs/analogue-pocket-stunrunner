@@ -67,6 +67,7 @@ module tms34010 (
     input  logic        dbg_force_di,   // bench: raise the display interrupt now
     input  logic        dbg_int_inhibit,// bench: interrupts are taken only after dbg_force_int
     input  logic        dbg_force_int,  // bench: take the pending interrupt at the next boundary (aborts a fetch in progress)
+    input  logic        dbg_int_pending,// bench: MAME had an interrupt pending here, so blits must defer as the hardware does
     input  logic        dbg_hold,       // bench: park at the instruction boundary (host accesses still serviced)
     output logic        dbg_idle        // bench: parked at the boundary with nothing pending
 );
@@ -2074,9 +2075,22 @@ module tms34010 (
                         // window mode 1: second write (DYDX), then WV interrupt request
                         rfw_en = 1'b1; rfw_idx = 5'd23; rfw_val = {blt_dy, blt_dx};
                         io[R_INTPEND] <= io[R_INTPEND] | INT_WV;
-                    end else if (st[SB_P]) begin
-                        st[SB_P] <= 1'b0;
+                    end else if (!st[SB_P] && int_ready && (!dbg_int_inhibit || dbg_int_pending)) begin
+                        // An interrupt is pending and this operation has not
+                        // touched anything yet. The 34010 takes it here, sets P
+                        // and re-executes the instruction afterwards -- SADDR,
+                        // DADDR and DYDX are left exactly as they were. Running
+                        // the blit to completion first and taking the interrupt
+                        // after leaves DADDR advanced by DYDX.y, which is what
+                        // diverged from MAME on the attract demo (w7).
+                        st[SB_P] <= 1'b1;
+                        pc <= pc - 32'h10;          // re-execute this instruction
+                        state <= S_CHECK;
                     end else begin
+                        // P set here means the handler has returned: clear it and
+                        // run the operation, which resumes from whatever SADDR /
+                        // DADDR / DYDX now hold.
+                        if (st[SB_P]) st[SB_P] <= 1'b0;
                         blt_mode_fill <= (opc == OP_FILL_L || opc == OP_FILL_XY);
                         blt_mode_b    <= (opc == OP_PIXBLT_BL || opc == OP_PIXBLT_BXY);
                         blt_dst_lin   <= (opc == OP_FILL_L || opc == OP_PIXBLT_BL || opc == OP_PIXBLT_LL || opc == OP_PIXBLT_XYL);
@@ -2106,6 +2120,15 @@ module tms34010 (
         // single register-file write port
         if (rfw_en) rf[rfw_idx] <= rfw_val;
     end
+
+    // True when S_CHECK would take an interrupt on this clock. PIXBLT/FILL use
+    // it to hand the interrupt over before they start (see the blit case in
+    // S_EXEC): the hardware does not run a blit to completion with an interrupt
+    // pending, it flags P, leaves every register alone and re-executes the
+    // instruction when the handler returns.
+    wire int_ready = dbg_int_pending
+                  || nmi_pend
+                  || (st[SB_IE] && ((io[R_INTPEND] & io[R_INTENB] & 16'h0e00) != 16'h0));
 
     // window unit operand: CPW uses Rs, PIXT/DRAV use Rd, LINE uses DADDR
     always_comb begin

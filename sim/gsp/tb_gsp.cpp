@@ -252,20 +252,41 @@ int main(int argc, char **argv) {
     auto wait_idle = [&]() { int g = 0; while (!top->dbg_idle && g++ < 4000000) { tick(); cycles++; } return g < 4000000; };
     auto wait_instr = [&]() { int g = 0; while (!top->dbg_instr && g++ < 4000000) { tick(); cycles++; } return g < 4000000; };
     if (!wait_idle()) { printf("FAIL: core never idle after load\n"); return 1; }
-    while (ninstr < maxinstr) {
-        // next trace entry (tracelog line then disassembly line)
-        have = false;
-        while (std::getline(tf, line)) {
-            if (parse_trace_line(line, t)) {
-                std::string dis; std::getline(tf, dis); t.dis = dis;
+    // One-entry lookahead. A PIXBLT/FILL whose next traced entry is an interrupt
+    // vector was deferred by the hardware, not executed: the 34010 hands the
+    // interrupt over before touching SADDR/DADDR/DYDX and re-runs the
+    // instruction afterwards. Without the lookahead the bench compares our
+    // completed blit against MAME's untouched registers.
+    TraceLine tla; bool have_la = false;
+    uint32_t deferred_pc = 0xffffffffu;   // a blit the hardware deferred to an interrupt
+    auto read_entry = [&](TraceLine &out) -> bool {
+        std::string ln;
+        while (std::getline(tf, ln)) {
+            if (parse_trace_line(ln, out)) {
+                std::string dis; std::getline(tf, dis); out.dis = dis;
                 size_t c = dis.find(": "); std::string m = (c == std::string::npos) ? "" : dis.substr(c + 2);
-                t.mnem = m.substr(0, m.find(' '));
+                out.mnem = m.substr(0, m.find(' '));
                 // MAME re-executes FILL/PIXBLT while it eats cycles: drop the continuation entries
-                if ((t.mnem == "FILL" || t.mnem == "PIXBLT") && t.pflag) { nskipped++; continue; }
-                have = true; break;
+                if ((out.mnem == "FILL" || out.mnem == "PIXBLT") && out.pflag) { nskipped++; continue; }
+                return true;
             }
         }
+        return false;
+    };
+    while (ninstr < maxinstr) {
+        // next trace entry (tracelog line then disassembly line)
+        if (have_la) { t = tla; have = true; have_la = false; }
+        else have = read_entry(t);
         if (!have) break;
+        have_la = read_entry(tla);
+        {
+            bool blit = (t.mnem == "FILL" || t.mnem == "PIXBLT");
+            uint32_t vdi = rlong(0xfffffea0) & ~0xfu, vhi = rlong(0xfffffec0) & ~0xfu,
+                     vwv = rlong(0xfffffe80) & ~0xfu, vnmi = rlong(0xfffffee0) & ~0xfu;
+            bool next_is_vec = have_la && (tla.pc == vdi || tla.pc == vhi || tla.pc == vwv || tla.pc == vnmi);
+            top->dbg_int_pending = (blit && next_is_vec) ? 1 : 0;
+            if (blit && next_is_vec) deferred_pc = t.pc;
+        }
         // host accesses that became visible before this instruction (core is parked at the boundary)
         uint32_t h = t.h | (lasth & 0xffff0000u);
         if (h < lasth) h += 0x10000;      // 16-bit counter wrapped
@@ -285,6 +306,15 @@ int main(int argc, char **argv) {
                 nforced++;
                 if (!wait_instr()) { printf("FAIL: no boundary after forced interrupt\n"); return 1; }
             }
+        }
+        // A deferred blit re-executes when the handler returns. MAME traces that
+        // re-execution as P-flagged continuation entries, which are filtered out
+        // above, so our core sits one instruction behind here: let it run the
+        // resumed blit and land on the instruction MAME is showing.
+        if (top->rd_pc != t.pc && top->rd_pc == deferred_pc) {
+            deferred_pc = 0xffffffffu;
+            tick(); cycles++;      // step off the current boundary first
+            if (!wait_instr()) { printf("FAIL: no boundary after resumed blit\n"); return 1; }
         }
         // compare
         bool ok = (top->rd_pc == t.pc) && (top->rd_st == t.st) && (top->rd_rf[15] == t.sp);

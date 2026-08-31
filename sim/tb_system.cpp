@@ -12,7 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
-#include <vector>
+#include <vector>\n#include <map>\n#include <algorithm>
 #include <string>
 #include <zlib.h>
 
@@ -90,7 +90,7 @@ int main(int argc, char **argv) {
     // run frames: count vsync rising edges
     std::vector<uint8_t> fb(512 * 240 * 3, 0);
     int frame = 0, x = 0, y = -1;
-    int prev_vs = 0, prev_hs = 0, prev_de = 0;
+    int prev_vs = 0, prev_hs = 0, prev_de = 0; int vec_lastf = -1;
     uint64_t last_report = cyc;
     uint32_t last_pc = 0; int same_pc = 0;
     while (frame < frames) {
@@ -182,6 +182,131 @@ int main(int argc, char **argv) {
             static FILE *pf = nullptr; static int pn = 0;
             if (!pf) pf = fopen("../artifacts/sim/pal_writes_rtl.txt", "w");
             if (pn < 400000) { fprintf(pf, "%d %s %03x %04x bank%d\n", frame, top->dbg_pal_we_rg ? "lo" : "hi", top->dbg_pal_waddr & 0xff, top->dbg_pal_wdata, top->dbg_palbank); pn++; fflush(pf); }
+        }
+        // TB_GSPRING: keep the last GSP PCs and dump them the moment the PC
+        // leaves ROM (0xfffxxxxx), which is how the attract-demo crash shows up.
+        // TB_IPS: GSP instructions per frame. The core is throttled to one
+        // instruction per cen_6m (16 clocks); if the FSM needs more clocks than
+        // that on average, the emulated GSP runs slower than the real 6 MHz part
+        // and the 68k's GspWaitIrq3 spins (streaming data) waiting for it.
+        if (getenv("TB_IPS")) {
+            static long n = 0; static int lastf = -1; static uint32_t pp = 0;
+            if (top->dbg_gsp_instr && top->dbg_gsp_pc != pp) { n++; pp = top->dbg_gsp_pc; }
+            if (frame != lastf) {
+                if (lastf >= 700 && lastf <= 713) printf("frame %3d: gsp instructions = %ld\n", lastf, n);
+                n = 0; lastf = frame;
+            }
+        }
+        // TB_DILOG: is the GSP's display interrupt actually firing? Count DI
+        // set-events per frame and show INTPEND/INTENB, plus the VRAM counter
+        // the GSP spins on (FFF716A0 -> vram word 3f16a).
+        if (getenv("TB_DILOG")) {
+            static uint16_t ip_prev = 0; static int di_sets = 0; static int lastf = -1;
+            static int intout_n = 0; static int io_prev2 = 0;
+            if (top->dbg_gsp_int && !io_prev2) intout_n++;
+            io_prev2 = top->dbg_gsp_int;
+            if ((top->dbg_gsp_intpend & 0x0400) && !(ip_prev & 0x0400)) di_sets++;
+            ip_prev = top->dbg_gsp_intpend;
+            if (frame != lastf) {
+                if (lastf >= 690 && lastf <= 715) {
+                    auto &vram = top->rootp->vlSymsp->TOP__tb_system_top.chip__DOT__mem;
+                    printf("frame %3d: DI sets=%2d intpend=%04x intenb=%04x  counter@fff716a0=%04x gsp_pc=%08x INTOUT=%d\n",
+                           lastf, di_sets, top->dbg_gsp_intpend, top->dbg_gsp_intenb,
+                           vram[0x100000u + 0x3716a], top->dbg_gsp_pc, intout_n);
+                    fflush(stdout);
+                }
+                di_sets = 0; intout_n = 0; lastf = frame;
+            }
+        }
+        // TB_PCHIST: which 68k routine is emitting the runaway command list?
+        if (getenv("TB_PCHIST") && frame >= 705 && frame <= 712) {
+            static std::map<uint32_t,long> hist; static long tot = 0;
+            if (top->dbg_host_wr) { hist[top->dbg_68k_exepc]++; tot++; }
+            if (frame == 712 && tot && !hist.empty()) {
+                std::vector<std::pair<long,uint32_t>> v;
+                for (auto &kv : hist) v.push_back({kv.second, kv.first});
+                std::sort(v.rbegin(), v.rend());
+                printf("68k PCs issuing host writes (top 10 of %ld):\n", tot);
+                for (size_t i = 0; i < v.size() && i < 10; i++) printf("   %06x  %ld\n", v[i].second, v[i].first);
+                fflush(stdout); hist.clear(); tot = 0;
+            }
+        }
+        // TB_HOSTLOG: our 68k's host-port register writes, in MAME's w7.host
+        // format (<n> W <reg> <data>), so the two sequences can be diffed.
+        if (getenv("TB_HOSTLOG") && frame >= 704 && frame <= 713) {
+            static FILE *hf = nullptr; static long hn = 0;
+            if (!hf) hf = fopen("../artifacts/host_rtl.txt", "w");
+            if (top->dbg_host_wr) { hn++; fprintf(hf, "%ld W %d %04x\n", hn, top->dbg_host_addr, top->dbg_host_wdata); }
+            if (frame == 713) { fflush(hf); }
+        }
+        // TB_FILLLOG: the 68k fills VRAM through the host port; log the walk so
+        // we can see where it starts, how long it runs and where it ends.
+        if (getenv("TB_FILLLOG") && frame >= 705 && frame <= 715) {
+            static int n = 0; static uint32_t first = 0, last = 0; static int lastf = -1;
+            if (top->dbg_gmem_req && top->dbg_gmem_ack && top->dbg_gmem_we) {
+                if (n == 0) { first = top->dbg_gmem_addr; printf("frame %d: host fill starts at %07x wd=%04x\n", frame, first, top->dbg_gmem_wdata); }
+                last = top->dbg_gmem_addr; n++; lastf = frame;
+                if (top->dbg_gmem_addr >= 0x0fffff00u && n < 100000)
+                    printf("frame %d: write near top  addr=%07x wd=%04x (write #%d)\n", frame, top->dbg_gmem_addr, top->dbg_gmem_wdata, n);
+            }
+            if (frame == 715 && n) { printf("fill summary: %d writes, first=%07x last=%07x\n", n, first, last); n = 0; }
+        }
+        // TB_VECWATCH: catch the moment the DI vector word changes, with the
+        // PCs of both CPUs and the GSP's current memory request, so we can see
+        // who overwrites the vectors at the top of VRAM.
+        if (getenv("TB_VECWATCH") && frame >= 640) {   // cheap until the window of interest
+            auto &vram = top->rootp->vlSymsp->TOP__tb_system_top.chip__DOT__mem;
+            static uint16_t prev_lo = 0, prev_hi = 0; static bool init = false; static int hits = 0;
+            uint16_t lo = vram[0x100000u + 0x3ffea], hi = vram[0x100000u + 0x3ffeb];
+            if (!init) { prev_lo = lo; prev_hi = hi; init = true; }
+            else if ((lo != prev_lo || hi != prev_hi) && hits < 8) {
+                hits++;
+                printf("frame %d: DI vector %04x%04x -> %04x%04x  gsp_pc=%08x 68k_pc=%08x gmem(req=%d we=%d addr=%07x wd=%04x)\n",
+                       frame, prev_hi, prev_lo, hi, lo, top->dbg_gsp_pc, top->dbg_68k_pc,
+                       top->dbg_gmem_req, top->dbg_gmem_we, top->dbg_gmem_addr, top->dbg_gmem_wdata);
+                fflush(stdout);
+                prev_lo = lo; prev_hi = hi;
+            }
+        }
+        // TB_VECDUMP: the GSP interrupt vectors live in the top of VRAM
+        // (bit fffffe80..ffffffe0 -> vram words 3ffe8..3fffe). Print them once
+        // per interval so we can see whether the 68k's GSP download ever wrote
+        // them, and whether something later wipes them.
+        if (getenv("TB_VECDUMP") && frame != vec_lastf && (frame % 60) == 0) {
+            vec_lastf = frame;
+            auto &vram = top->rootp->vlSymsp->TOP__tb_system_top.chip__DOT__mem;
+            printf("frame %3d vectors:", frame);
+            for (uint32_t w : {0x3ffe8u, 0x3ffeau, 0x3ffecu, 0x3ffeeu, 0x3fffeu}) {
+                uint32_t base = 0x100000u + w;   // VRAM_BASE in the SDRAM word map
+                printf(" %04x%04x", vram[base + 1], vram[base]);
+            }
+            printf("\n"); fflush(stdout);
+        }
+        if (getenv("TB_GSPRING")) {
+            static uint16_t ip_prev = 0;
+            if (top->dbg_gsp_intpend != ip_prev) {
+                uint16_t set = top->dbg_gsp_intpend & ~ip_prev;
+                if (set & 0x0800) printf("frame %d: WV interrupt REQUESTED  control=%04x intenb=%04x gsp_pc=%08x\n",
+                                         frame, top->dbg_gsp_control, top->dbg_gsp_intenb, top->dbg_gsp_pc);
+                ip_prev = top->dbg_gsp_intpend;
+            }
+            static std::vector<uint32_t> ring(256, 0); static size_t rp = 0; static bool dumped = false;
+            static uint32_t prevpc = 0;
+            if (top->dbg_gsp_instr && top->dbg_gsp_pc != prevpc) {
+                prevpc = top->dbg_gsp_pc;
+                ring[rp++ & 255] = top->dbg_gsp_pc;
+                if (top->dbg_gsp_pc == 0xfffffff0)
+                    printf("frame %d: GSP jumped to fffffff0  int_vec=%08x fr_addr=%08x fr_val=%08x intpend=%04x intenb=%04x\n",
+                           frame, top->dbg_gsp_intvec, top->dbg_gsp_fraddr, top->dbg_gsp_frval,
+                           top->dbg_gsp_intpend, top->dbg_gsp_intenb);
+                if (!dumped && (top->dbg_gsp_pc >> 20) != 0xfff && top->dbg_gsp_pc != 0) {
+                    dumped = true;
+                    printf("GSP left ROM at frame %d, pc=%08x -- last %d PCs:\n", frame, top->dbg_gsp_pc, 64);
+                    for (size_t k = (rp >= 64 ? rp - 64 : 0); k < rp; k++)
+                        printf("   %08x\n", ring[k & 255]);
+                    fflush(stdout);
+                }
+            }
         }
         if (top->cen_pix) {
             if (top->vsync && !prev_vs) {
