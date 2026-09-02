@@ -482,7 +482,7 @@ int main(int argc, char **argv) {
                     // a visible-line step must not INCREASE the row part (rows count down through the frame)
                     if ((d & 0xfffc) > (prev_dpyadr & 0xfffc)) {
                         jumps++;
-                        if (shown < 30) { shown++; printf("frame %3d vc %3d: DPYADR jumped %04x -> %04x (DPYSTRT %04x)\n", frame, vc, prev_dpyadr, d, top->dbg_dpystrt); fflush(stdout); }
+                        if (shown < 30) { shown++; printf("frame %3d vc %3d (gsp_vc %3d): DPYADR jumped %04x -> %04x (DPYSTRT %04x VSBLNK %04x)\n", frame, vc, top->dbg_gsp_vc, prev_dpyadr, d, top->dbg_dpystrt, top->dbg_vsblnk); fflush(stdout); }
                     }
                 }
                 prev_dpyadr = d; have_prev = visible;
@@ -492,6 +492,44 @@ int main(int argc, char **argv) {
                     printf("frame %3d: late_lines=%ld  row_jumps=%ld  (visible lines %ld)\n", lastf, late, jumps, lines);
                 late = jumps = lines = 0; lastf = frame;
             }
+        }
+        // TB_GIOLOG: every GSP I/O-register write to the display/timing registers
+        // (HESYNC..CONTROL = 0..11, DPYTAP = 27, DPYADR = 30) with the scan position,
+        // in frames 380-400 -- to see what moves DPYADR back to DPYSTRT at line ~133
+        // every third frame on the level-select screen.
+        if (getenv("TB_GIOLOG")) {
+            if (frame >= 380 && frame <= 400 && top->dbg_gio_we) {
+                int idx = top->dbg_gio_addr;
+                if (idx <= 11 || idx == 27 || idx == 30) {
+                    static const char *nm[32] = {"HESYNC","HEBLNK","HSBLNK","HTOTAL","VESYNC","VEBLNK","VSBLNK","VTOTAL","DPYCTL","DPYSTRT","DPYINT","CONTROL",
+                        "","HSTADRL","HSTADRH","HSTCTLL","HSTCTLH","INTENB","INTPEND","CONVSP","CONVDP","PSIZE","","","","","","DPYTAP","","","DPYADR",""};
+                    printf("frame %3d gsp_vc %3d vid_vcount %3d: GSP writes %-7s = %04x   (gsp_pc %08x, DPYADR now %04x DPYSTRT %04x DPYINT %04x)\n",
+                           frame, top->dbg_gsp_vc, top->dbg_vcount, nm[idx], top->dbg_gio_wdata, top->dbg_gsp_pc,
+                           top->dbg_dpyadr, top->dbg_dpystrt, top->dbg_gsp_dpyint);
+                    fflush(stdout);
+                }
+            }
+        }
+        // TB_LINELOG: per scan line, for frames TB_LINELOG..+7, what the GSP is
+        // doing: instructions retired and memory requests in that line, PC at the
+        // line start, ST.IE (bit 21 of the 34010 status word), INTPEND/INTENB,
+        // HSTCTLH (HLT = bit 15, held by the 68k), and DPYADR. The DI handler
+        // (DPYINT = 2) writes DPYADR at line 2 in MAME; on our flip frames it
+        // lands at line ~133, and this shows where those lines went.
+        if (getenv("TB_LINELOG")) {
+            static int f0 = atoi(getenv("TB_LINELOG"));
+            static long li = 0, lm = 0; static int lastvc = -1;
+            if (frame >= f0 && frame < f0 + 8) {
+                if (top->dbg_gsp_instr) li++;
+                if (top->dbg_gmem_req && !top->dbg_gmem_ack) lm++;
+                if (top->dbg_line_start) {
+                    printf("f%3d vc %3d: instr %6ld memreq %6ld pc %08x IE %d P %d intpend %04x intenb %04x hstctlh %04x dpyadr %04x dpystrt %04x\n",
+                           frame, top->dbg_vcount, li, lm, top->dbg_gsp_pc, (top->dbg_gsp_st >> 21) & 1, (top->dbg_gsp_st >> 25) & 1,
+                           top->dbg_gsp_intpend, top->dbg_gsp_intenb, top->dbg_hstctlh, top->dbg_dpyadr, top->dbg_dpystrt);
+                    li = lm = 0;
+                }
+            }
+            if (frame == f0 + 8 && lastvc != -2) { lastvc = -2; fflush(stdout); }
         }
         // TB_MEMDUMP: dump the ADSP program and data RAM at frame TB_MEMDUMP so it
         // can be diffed against MAME's at the same frame. The ADSP bench loads PM
@@ -805,7 +843,8 @@ int main(int argc, char **argv) {
         if (top->cen_pix) {
             if (top->vsync && !prev_vs) {
                 // frame done
-                if (snap_every > 0 && frame % snap_every == 0) {
+                static int snap_from = getenv("TB_SNAP_FROM") ? atoi(getenv("TB_SNAP_FROM")) : 0;
+                if (snap_every > 0 && frame >= snap_from && frame % snap_every == 0) {
                     static const char *sd = getenv("TB_SNAPDIR") ? getenv("TB_SNAPDIR") : "../artifacts/sim";
                     char name[256]; snprintf(name, sizeof name, "%s/frame%05d.png", sd, frame);
                     write_png(name, fb, 512, 240);

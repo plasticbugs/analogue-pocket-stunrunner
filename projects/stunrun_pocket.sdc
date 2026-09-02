@@ -439,6 +439,20 @@ set_multicycle_path -hold  3 -from [get_registers {*|tms34010:*|ir[*]}] -to [get
 # register-move push/pop); every capture of a pointer-derived value happens in
 # S_ISSUE or S_WB. Nearest pairing is an S_ISSUE write captured in S_WB, 2
 # clocks later (S_MEM between, longer under io_wait); all others are >=4. 2/1.
+# astat -> the shifter's S_ISSUE captures. ASTAT is written ONLY in S_WB (the
+# direct alu/mac/shifter/div flag writes, the WRITE_REG0 expansion for a
+# register move into ASTAT, and both STAT_POP expansions -- every site checked
+# mechanically) and at reset. The shifter pre-computes its result cone in
+# S_ISSUE (clz_in uses astat[SS] for EXP; nsb/nse/sh_st are captured into
+# sh_sb/sh_se/sh_sr0/sh_sr1/sh_astat on that tick) -- and S_ISSUE follows S_WB
+# through S_IDLE (>=1 clock waiting for cen), S_WAIT, S_LATCH and S_DEC, so the
+# capture is >=4 clocks after any astat write. Claimed 2/1. Placement variance
+# on this cone cost 0.4 ns between otherwise identical builds; the margin was
+# never real, it just used to land on the right side of zero.
+set ADSP_SHCAP [get_registers {*|adsp2100:*|sh_sb[*] *|adsp2100:*|sh_se[*] *|adsp2100:*|sh_sr0[*] *|adsp2100:*|sh_sr1[*] *|adsp2100:*|sh_astat[*] *|adsp2100:*|sh_sb_we *|adsp2100:*|sh_se_we *|adsp2100:*|sh_sr_we}]
+set_multicycle_path -setup 2 -from [get_registers {*|adsp2100:*|astat[*]}] -to $ADSP_SHCAP
+set_multicycle_path -hold  1 -from [get_registers {*|adsp2100:*|astat[*]}] -to $ADSP_SHCAP
+
 set ADSP_SP [get_registers {*|adsp2100:*|pc_sp[*] *|adsp2100:*|loop_sp[*] *|adsp2100:*|cntr_sp[*] *|adsp2100:*|stat_sp[*]}]
 set_multicycle_path -setup 2 -from $ADSP_SP -to [get_registers {*|adsp2100:*|*}]
 set_multicycle_path -hold  1 -from $ADSP_SP -to [get_registers {*|adsp2100:*|*}]
@@ -613,6 +627,25 @@ set_multicycle_path -hold  2 -from [get_registers {*|sdram_ctrl:*|ready}] -to [g
 set FW_DST [get_registers {*|tms34010:*|w_wdata[*] *|tms34010:*|w_addr[*] *|tms34010:*|w_we *|tms34010:*|w_srt *|tms34010:*|w_ret*}]
 set_multicycle_path -setup 2 -from [get_registers {*|tms34010:*|fw_addr[*]}] -to $FW_DST
 set_multicycle_path -hold  1 -from [get_registers {*|tms34010:*|fw_addr[*]}] -to $FW_DST
+
+# fw_k -> the field-write data/address captures. fw_k is written in S_FW0 (=0)
+# and S_FW3 (+1, the multi-word loop) -- both sites checked mechanically. Its
+# consumers are S_FW1 (w_addr, w_wdata <= fw_dk) and S_FW2 (w_wdata from
+# fw_dk/fw_mk). S_FW1 is mph-settled (RTL, above), so on the S_FW3 -> S_FW1
+# loop its acting tick is 2 clocks after the write; the first pass goes
+# through S_FW0B/S_FW0C (>=3), and S_FW2 sits behind S_FW1's memory cycle
+# (>=3). 2/1. Failed by -0.10 ns at 99 % fit without it.
+set_multicycle_path -setup 2 -from [get_registers {*|tms34010:*|fw_k[*]}] -to $FW_DST
+set_multicycle_path -hold  1 -from [get_registers {*|tms34010:*|fw_k[*]}] -to $FW_DST
+
+# imm -> everything. The immediate words are written ONLY at the fetch ticks
+# (S_FT1 on an icache hit, S_FT2 from memory; both sites checked mechanically)
+# and every consumer is on S_EXEC's acting tick: S_FT1/S_FT2 -> S_FTDONE ->
+# S_EXEC settle -> S_EXEC act is 3 clocks from the write edge. Nothing between
+# reads imm (S_FTDONE compares immcnt/immn, not imm). Claimed 2/1. Failed by
+# -0.10 ns (imm[12] -> alu_b[11]) at 99 % fit without it.
+set_multicycle_path -setup 2 -from [get_registers {*|tms34010:*|imm[*]}] -to $GSP_ALL
+set_multicycle_path -hold  1 -from [get_registers {*|tms34010:*|imm[*]}] -to $GSP_ALL
 
 # JSA sound ROM loader port -> T65. The ROM's port B is the download port; the
 # loader only writes it while dl_active is asserted, and dl_active holds the

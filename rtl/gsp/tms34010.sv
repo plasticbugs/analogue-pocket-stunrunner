@@ -479,7 +479,7 @@ module tms34010 (
         S_BLT0, S_BLT1, S_BLT1B, S_BLT1C, S_BLT1D, S_BLT2, S_BLT2B, S_BLT2C, S_BLT2D, S_BLT2E,
         S_BLT_ROW, S_BLT_ROWB, S_BLT_ROWC, S_BLT_SRC0, S_BLT_SRC0W, S_BLT_SRC0X, S_BLT_DST0, S_BLT_DST0W,
         S_BLT_PIX, S_BLT_SRCNW, S_BLT_SRCNX, S_BLT_DSTN, S_BLT_DSTNW, S_BLT_PIX1, S_BLT_PIX2, S_BLT_WRW,
-        S_BLT_FLUSH, S_BLT_FLUSHR, S_BLT_NEXTROW, S_BLT_END, S_BLT_END2, S_BLT_END3, S_BLT_END3B, S_BLT_END4
+        S_BLT_FLUSH, S_BLT_FLUSHR, S_BLT_NEXTROW, S_BLT_END, S_BLT_END2, S_BLT_END3, S_BLT_END3B, S_BLT_END4, S_BLT_END4B, S_BLT_END5
     } state_t;
 
     // writeback selectors for the shared units
@@ -720,6 +720,30 @@ module tms34010 (
     logic        blt_mode_fill, blt_mode_b, blt_src_lin, blt_dst_lin, blt_yrev, blt_req_src;
     logic [15:0] blt_dx, blt_dy, blt_x, blt_y;
     logic [31:0] blt_saddr, blt_srow, blt_drow;
+    // A FILL/PIXBLT may be interrupted between rows. As on the 34010 (and as
+    // MAME's core behaves while it eats a blit's cycles with P set), progress
+    // is carried in the architectural registers: at the interrupt point the
+    // end-of-blit writeback runs with the rows completed so far -- DADDR and
+    // SADDR advance by that many rows (not for y-reversed operands, whose
+    // remaining rows start at the original base), DYDX.y becomes the rows
+    // remaining -- P stays set, the PC is backed up to the instruction and
+    // the interrupt is taken. Re-execution is the ordinary setup from those
+    // registers. A handler that runs a blit of its own (this game's DI handler
+    // does) must save and restore the B file, which it has to do on the real
+    // chip too, so nesting needs nothing extra here. After an interrupted
+    // blit DYDX.y is the count left at the last interruption rather than the
+    // original; MAME never interrupts mid-blit, so its traces cannot see it.
+    // Before this a blit could only be interrupted before it had touched
+    // anything, and a full-screen fill that had already started held the
+    // display interrupt off for ~90 scan lines: the DI handler's DPYADR write
+    // then tore the picture.
+    logic        blt_int_wb;
+    logic [15:0] blt_done;
+    // rows the writeback advances by: the whole blit normally; on an interrupt
+    // the rows completed, or none for y-reversed operands (their remaining rows
+    // start at the original base and only DYDX.y shrinks)
+    wire  [15:0] blt_wb_rows = !blt_int_wb ? B_DYDX[31:16]
+                             : ((!blt_mode_fill && !blt_mode_b && blt_yrev) ? 16'd0 : blt_done);
     logic [27:0] blt_swa, blt_dwa;
     logic [4:0]  blt_sbit, blt_dbit;
     logic [31:0] blt_sw;                    // source word, current pixel at bit 0
@@ -864,7 +888,7 @@ module tms34010 (
             vc <= 16'd0;
             for (int i = 0; i < 32; i++) io[i] <= 16'h0;
             io[R_HSTCTLH] <= 16'h8000;          // halt on reset (/HCS)
-            st <= 32'h0000_0010;
+            st <= 32'h0000_0010; blt_int_wb <= 1'b0;
             pc <= 32'h0;
             reset_deferred <= 1'b1;
             istep <= 4'd0;
@@ -1161,7 +1185,12 @@ module tms34010 (
                 fw_dhi <= (fw_addr[3:0] == 4'h0) ? 16'h0 : sh_r[15:0];
                 state <= S_FW1;
             end
-            S_FW1: begin
+            // Settle tick: on the S_FW3 -> S_FW1 loop of a multi-word field
+            // write, fw_k is written on the clock before this state; fw_dk and
+            // fw_mk are shifts by it. The tick makes the two-clock budget the
+            // SDC claims for fw_k -> w_wdata real.
+            S_FW1: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
                 w_addr <= fw_addr[31:4] + {26'd0, fw_k};
                 w_srt  <= 1'b0;
                 if (fw_mk == 16'hffff) begin
@@ -1571,12 +1600,18 @@ module tms34010 (
                         blt_srow <= blt_srow + B_SPTCH;
                         blt_drow <= blt_drow + B_DPTCH;
                     end
-                    state <= S_BLT_ROW;
+                    if (int_ready && (!dbg_int_inhibit || dbg_int_pending)) begin
+                        // take the interrupt between rows: write the progress into
+                        // DADDR/SADDR/DYDX via the end-of-blit sequence, keep P
+                        blt_int_wb <= 1'b1;
+                        blt_done   <= blt_y + 16'd1;
+                        state <= S_BLT_END;
+                    end else state <= S_BLT_ROW;
                 end
             end
             S_BLT_END: begin
-                st[SB_P] <= 1'b0;
-                mul_a <= $signed({{17{B_DYDX[31]}}, B_DYDX[31:16]});          // sign-extended DYDX.y
+                if (!blt_int_wb) st[SB_P] <= 1'b0;                          // an interrupted blit keeps P
+                mul_a <= $signed({{17{blt_wb_rows[15]}}, blt_wb_rows});      // rows to advance by (sign-extended)
                 mul_b <= $signed({B_DPTCH[31], B_DPTCH});
                 state <= S_BLT_END2;
             end
@@ -1587,7 +1622,7 @@ module tms34010 (
                 // rather than in S_BLT_END2 so that mul_p is not reloaded with the
                 // next product on this state's settle tick.
                 if (blt_dst_lin) begin rfw_en = 1'b1; rfw_idx = 5'd28; rfw_val = B_DADDR + mul_res[31:0]; end
-                else begin rfw_en = 1'b1; rfw_idx = 5'd28; rfw_val = {B_DADDR[31:16] + B_DYDX[31:16], B_DADDR[15:0]}; end
+                else begin rfw_en = 1'b1; rfw_idx = 5'd28; rfw_val = {B_DADDR[31:16] + blt_wb_rows, B_DADDR[15:0]}; end
                 mul_b <= $signed({B_SPTCH[31], B_SPTCH});
                 state <= S_BLT_END3B;
             end
@@ -1604,8 +1639,20 @@ module tms34010 (
                 mph <= 1'b0;
                 if (!blt_mode_fill) begin
                     if (blt_src_lin) begin rfw_en = 1'b1; rfw_idx = 5'd30; rfw_val = B_SADDR + mul_res[31:0]; end
-                    else begin rfw_en = 1'b1; rfw_idx = 5'd30; rfw_val = {B_SADDR[31:16] + B_DYDX[31:16], B_SADDR[15:0]}; end
+                    else begin rfw_en = 1'b1; rfw_idx = 5'd30; rfw_val = {B_SADDR[31:16] + blt_wb_rows, B_SADDR[15:0]}; end
                 end
+                state <= blt_int_wb ? S_BLT_END4B : S_CHECK;
+            end
+            // Interrupted between rows: a settle tick after S_BLT_END4's SADDR
+            // write (rf -> rf writes stay >=2 clocks apart), then DYDX.y becomes
+            // the rows remaining, the PC is backed up to the instruction and
+            // the pending interrupt is taken in S_CHECK. P is still set.
+            S_BLT_END4B: state <= S_BLT_END5;
+            S_BLT_END5: if (!mph) mph <= 1'b1; else begin
+                mph <= 1'b0;
+                rfw_en = 1'b1; rfw_idx = 5'd23; rfw_val = {B_DYDX[31:16] - blt_done, B_DYDX[15:0]};
+                blt_int_wb <= 1'b0;
+                pc <= pc - 32'h10;
                 state <= S_CHECK;
             end
 

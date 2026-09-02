@@ -14,7 +14,7 @@ is not here has not been verified.
 | TMS34010 core (`rtl/gsp/`) | `sim/run_gsp.sh` | MAME GSP instruction trace (PC, ST, SP, A0–A14, B0–B14 per instruction) + end-of-window VRAM | PASS on 3 windows: boot/download (1,860,171 instr), 3D attract (88,534), title screens (3,917,724); 0 divergences over 5.87 M instructions; final VRAM word-identical; 60 mnemonics / 121 operand forms covered — `docs/gsp.md` |
 | ADSP-2100 core (`rtl/adsp/`) | `sim/run_adsp.sh` | MAME ADSP instruction trace + every data-space access + 68k RAM writes replayed | PASS on 4 windows: 5,274,473 / 22,196,327 / 961,476 / 256,948 instructions (w4 = the 3D demo's first two frames from the trigger), 0 mismatches, final memories identical; also PASS with random `io_wait` stalls (`IOWAIT=N`, asserted from the `io_rd` clock) and random `halt` injection (`HALT=N`) — `docs/adsp.md` |
 | Whole machine | `sim/run_system.sh` | MAME boot timeline (per-frame CPU PCs), MAME's title-screen frame, MAME's 68k/ADSP protocol trace (`tools/trace_som.lua`) | boots from the ROM download and reaches the title screen **pixel-identical to MAME (0 differing pixels, dy=0)** when captured on DE; palette word-identical (1024/1024); sound board answers the reset and receives the title-music command; **enters and runs the 3D attract demo** with the 68k/ADSP handshake matching MAME's per-frame counts (see below). Every SIM ROM word the ADSP receives is checked against the image (hard gate) |
-| Synthesis (Quartus 18.1, 5CEBA4) | `./build-local.sh` | — | **fits, compiles and closes timing** (build of `4c8c24c`): Fitter 0 errors; 18,295 / 18,480 ALMs (99 %), 15,464 registers, block RAM 51 %, 22/66 DSP. **Zero negative slack** at every corner on the 96 MHz core clock: setup +0.235 ns (slow 85 °C), +0.359 (slow 0 °C), +3.56 / +3.73 (fast); hold +0.295 / +0.291 (slow), +0.127 / +0.053 (fast 85 / 0 °C). Which slow corner is worst for setup has flipped between builds (0 °C last time, 85 °C this time) — always read both. |
+| Synthesis (Quartus 18.1, 5CEBA4) | `./build-local.sh` | — | **fits, compiles and closes timing** (build with the between-row blit interrupt, the S_FW1 settle tick and the D-pad fix): Fitter 0 errors; 18,253 / 18,480 ALMs (99 %), 15,604 registers, block RAM 51 %. **Zero negative slack** at every corner on the 96 MHz core clock, with the `astat -> shifter`, `imm -> *` and `fw_k -> field write` multicycles (each argued in the SDC): setup +0.170 ns (slow 85 °C), +0.381 (slow 0 °C), +3.35 / +3.54 (fast); hold +0.292 / +0.284 (slow), +0.067 / +0.000 (fast 85 / 0 °C — met, and the thinnest number in the design). Which slow corner is worst for setup flips between builds — always read both. |
 | Hardware (Pocket) | — | — | not yet built |
 
 ## Lessons recorded on the way
@@ -57,6 +57,25 @@ is not here has not been verified.
   it change every clock.
 
 
+- **A positive slack that was never argued for is not margin.** The ADSP's
+  `astat[SS] -> EXP clz -> sh_sb` cone closed at +0.24 / +0.36 ns for several
+  builds with no exception, then a GSP change moved the placement and it came
+  in at -0.15 / -0.29 ns. The path is provably >=4 clocks (astat is written
+  only in S_WB; the capture is S_ISSUE, four states later) and now carries a
+  2/1 multicycle with that argument. Check the worst-path list (`projects/
+  worst0c.tcl`, `worst85c.tcl`) for thin *positive* paths after every build,
+  not only negative ones.
+- **At 99 % fit, every build lands a different marginal path.** Three
+  consecutive builds of functionally close RTL each failed by 0.1-0.3 ns on a
+  different path (ADSP `astat -> sh_sb`, then GSP `imm -> alu_b` and
+  `fw_k -> w_wdata`) while the others gained margin. Treat each as a claim to
+  prove, not a seed to re-roll: `imm` is written only at the fetch ticks and
+  read only on S_EXEC's settled act (3 clocks, claimed 2); `fw_k -> w_wdata`
+  on the S_FW3 -> S_FW1 loop was a *real* one-clock path and got a settle tick
+  in S_FW1 before its 2/1 was written. The worst-path scripts
+  (`projects/worst0c.tcl`, `worst85c.tcl`) against the fitted netlist take
+  three minutes; a relax-only SDC edit can be trusted on the existing fit, an
+  RTL settle tick cannot and needs the recompile.
 - **TG68K bus sampling.** The kernel's `addr_out` settles one clock after
   `busstate` changes on a step; sampling the bus on the cycle right after
   `clkena` fetched the previous address (the second ROM read returned word 0
@@ -194,6 +213,72 @@ Recorded so they are not hit again:
 - **Our ADSP reset clears every register; MAME's leaves I/M/L, CNTR and the
   compute registers alone.** Not exercised at the kick (the 68k only pulses
   reset at boot), but a latent difference.
+
+## The level-select / gameplay flicker (fixed)
+
+Symptom on hardware: on "RAISE CONTROL TO SELECT LEVEL" and sporadically in
+gameplay, the lower half of the picture shows the top half again, the split
+line jumping a few pixels frame to frame. Reproduced in `sim/run_system.sh`
+with coin at 300 and Start at 360 (`TB_ROWLOG`, snapshots from 380).
+
+**Mechanism.** The game's display-interrupt handler (`DPYINT = 2`, handler at
+GSP `fff41d00`) rewrites `DPYSTRT`, `DPYADR`, `DPYCTL` and `DPYTAP` every
+frame at scan line 2 -- MAME: `VCOUNT 2, HCOUNT ~95-105` -- inside vertical
+blank, where reloading `DPYADR` is invisible. On our machine, on every third
+frame (the game's 20 fps buffer flip), the same writes landed at line ~93-133,
+so the row pointer restarted mid-screen and the lower half repeated the top.
+`TB_LINELOG` showed why: for those ~90 lines the GSP was inside one
+full-screen FILL/PIXBLT (`pc fff44430`, ~2,150 memory requests per line,
+`instr 0`) with the DI **pending and enabled** (`intpend 0400 intenb 0400`,
+`IE 1`) and `P = 1`. The core only interrupted a blit *before it had touched
+anything* (`!st[SB_P] && int_ready` at issue); once running -- or re-running
+after an earlier interruption, with P set -- it went to completion. MAME's
+blit (34010gfx.hxx) does the memory work at once and then re-executes the
+instruction with P set while it eats the cycle cost, taking interrupts
+between those re-executions with SADDR/DADDR/DYDX still at their pre-blit
+values; the real 34010 is interruptible mid-PIXBLT too (that is what PBX is
+for). Ours was not.
+
+**Fix** (`rtl/gsp/tms34010.sv`): at `S_BLT_NEXTROW`, a pending enabled
+interrupt sends the blit through the end-of-blit writeback with the rows
+completed so far instead of the whole count: `DADDR`/`SADDR` advance by those
+rows (not for y-reversed operands, whose remaining rows start at the original
+base), a new `S_BLT_END5` sets `DYDX.y` to the rows remaining, `P` stays set,
+the PC is backed up to the instruction and the interrupt is taken in
+`S_CHECK`. Re-execution is the ordinary setup from those registers -- there
+is no resume path. That is how the 34010 carries PIXBLT progress, and it is
+why a handler that blits (this game's DI handler does, `fff43040`) must save
+and restore the B file, which it has to do on the real chip anyway; nesting
+therefore needs nothing extra. After an interrupted blit `DYDX.y` holds the
+count left at the last interruption rather than the original; MAME never
+interrupts mid-blit, so its traces cannot see that, and the game reloads
+`DYDX` before every blit.
+
+Two attempts preceded this, recorded because each cost a build:
+
+1. A resume flag reset with a replace-all on `st <= 32'h0000_0010`, whose
+   second occurrence is **`S_INT2` -- interrupt entry (`RESET_ST`), not a
+   reset**. Every display interrupt then restarted a running fill from row 0;
+   a fill longer than a frame never completed, the 68k timed out on the GSP
+   and the watchdog rebooted the machine at frame ~444.
+2. A shadow of the row-loop state, restored on re-execution. The re-executed
+   instruction still ran the setup states, which re-clip against the window
+   and re-read pitch and size -- registers the handler's own blit changes --
+   so the outer fill was skipped or mis-sized with `P` and the flag left
+   stale, and the next blit resumed into garbage. Same reboot, same frame.
+   The lesson is the one the core's own comment already stated: MAME skips
+   *all* setup when `P` is set. Keep the progress where the hardware keeps it.
+
+**Result** (`TB_ROWLOG=1 sim/run_system.sh 520 10 300 360`, snapshots from
+380): zero mid-frame `DPYADR` jumps on every flip frame from 385 to 520 (the
+only jumps logged are the four boot-time ones at frames 0/116/149/158), no
+reboot, and the level-select snapshots match MAME's reference frame instead of
+showing the top half twice. GSP bench 8/8 windows PASS before and after.
+
+Not the same thing as the attract lag, but exposed by it: with the GSP
+behind, the flip frame's fill was still running when line 2 came round.
+Making the blit interruptible restores the display interrupt's latency to
+one row regardless of throughput; the lag itself is unchanged.
 
 Still open, and separate: the attract sequence runs ~147 frames late (MAME
 starts the demo at frame 559, we start at 705). That is throughput, not logic;

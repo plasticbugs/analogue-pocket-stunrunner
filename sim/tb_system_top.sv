@@ -47,6 +47,7 @@ module tb_system_top (
     output logic [12:0] dbg_dm_addr_68k,
     output logic [15:0] dbg_dm_wdata_68k,
     output logic        dbg_sim_rd, dbg_sim_fetching,
+    output logic [31:0] dbg_gsp_st,
     output logic [17:0] dbg_sim_idx,
     output logic [15:0] dbg_sim_word,
     output logic        dbg_adsp_bank,
@@ -122,6 +123,7 @@ module tb_system_top (
     assign dbg_adsp_reset_o = core.adsp_reset;
     assign dbg_pm_we_68k = core.main.pm_we; assign dbg_pm_addr_68k = core.main.pm_addr; assign dbg_pm_wdata_68k = core.main.pm_wdata;
     assign dbg_gsp_intpend = core.gsp.io[18];
+    assign dbg_gsp_st = core.gsp.st;
     assign dbg_gsp_fraddr  = core.gsp.fr_addr;
     assign dbg_gsp_frval   = core.gsp.fr_val;
     assign dbg_gsp_intvec  = core.gsp.int_vec;
