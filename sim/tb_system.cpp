@@ -22,6 +22,8 @@ static Vtb_system_top *top;
 static uint64_t cyc = 0;
 static inline void tick() { top->clk = 0; top->eval(); top->clk = 1; top->eval(); cyc++; }
 
+static long g_sim_mismatches = 0;   // TB_SIMCHK: SIM words that did not match the ROM image
+
 static void write_png(const char *path, const std::vector<uint8_t> &rgb, int w, int h) {
     std::vector<uint8_t> raw; raw.reserve((w * 3 + 1) * h);
     for (int y = 0; y < h; y++) { raw.push_back(0); raw.insert(raw.end(), rgb.begin() + y * w * 3, rgb.begin() + (y + 1) * w * 3); }
@@ -187,6 +189,72 @@ int main(int argc, char **argv) {
         }
         // TB_GSPRING: keep the last GSP PCs and dump them the moment the PC
         // leaves ROM (0xfffxxxxx), which is how the attract-demo crash shows up.
+        // TB_ARB: SDRAM grants per client per frame, plus how long the burst port
+        // holds the bus. Client 0 is the GSP; if it is starved on the dead frame
+        // the arbiter is the throughput problem, not the GSP.
+        if (getenv("TB_ARB")) {
+            static long g[6] = {0,0,0,0,0,0}; static long bact = 0; static int lastf = -1;
+            for (int i = 0; i < 6; i++) if (top->dbg_c_ack & (1u << i)) g[i]++;
+            if (top->dbg_b_active) bact++;
+            if (frame != lastf) {
+                if (lastf >= 400 && lastf <= 412)
+                    printf("frame %3d: grants gsp=%6ld rom=%6ld sim=%6ld oki=%5ld ldr=%4ld spare=%4ld | burst_active=%7ld (%4.1f%%)\n",
+                           lastf, g[0], g[1], g[2], g[3], g[4], g[5], bact, 100.0*bact/1594636.0);
+                for (int i = 0; i < 6; i++) g[i] = 0;
+                bact = 0; lastf = frame;
+            }
+        }
+        // TB_GSPSTALL: where does the GSP's frame go? Count clocks with a memory
+        // request outstanding (req high, no ack yet) against instructions retired.
+        // A 6 MHz 34010 can retire ~99,700 instructions per 60.2 Hz frame; if we
+        // are far below that with heavy stall time, SDRAM latency is throttling it.
+        if (getenv("TB_GSPSTALL")) {
+            static long stall = 0, ins = 0, req = 0; static uint32_t pp = 0; static int lastf = -1;
+            if (top->dbg_gmem_req && !top->dbg_gmem_ack) stall++;
+            if (top->dbg_gmem_req && top->dbg_gmem_ack) req++;
+            if (top->dbg_gsp_instr && top->dbg_gsp_pc != pp) { ins++; pp = top->dbg_gsp_pc; }
+            if (frame != lastf) {
+                if (lastf >= 400 && lastf <= 440)
+                    printf("frame %3d: gsp_instr=%6ld mem_reqs=%5ld stall_clocks=%7ld (%4.1f%% of frame)\n",
+                           lastf, ins, req, stall, 100.0*stall/1594636.0);
+                stall = ins = req = 0; lastf = frame;
+            }
+        }
+        // TB_BUFRATE: GSP command buffers completed per 20 frames, the pipeline's
+        // real throughput. MAME manages 6-7; if we manage fewer the whole game
+        // advances more slowly and the attract sequence falls behind.
+        if (getenv("TB_BUFRATE")) {
+            static int prev = 0; static long blk = 0; static int lastf = -1;
+            if (top->dbg_gsp_int && !prev) blk++;
+            prev = top->dbg_gsp_int;
+            if (frame != lastf) {
+                if (lastf > 0 && lastf % 20 == 0) {
+                    if (lastf >= 380) printf("frames %d-%d: gsp buffers completed = %ld\n", lastf-19, lastf, blk);
+                    blk = 0;
+                }
+                lastf = frame;
+            }
+        }
+        // TB_68KHIST: which 68k routine is our machine running while MAME is
+        // already driving the 3D demo? Histogram of the real PC (exe_pc, not the
+        // address bus) over the frames where MAME starts the demo.
+        if (getenv("TB_68KHIST")) {
+            static std::map<uint32_t,long> h; static uint32_t pp = 0; static bool shown = false;
+            if (frame >= 550 && frame <= 568 && top->dbg_68k_exepc != pp) {
+                h[top->dbg_68k_exepc]++; pp = top->dbg_68k_exepc;
+            }
+            if (frame >= 569 && !shown && !h.empty()) {
+                shown = true;
+                std::vector<std::pair<long,uint32_t>> v;
+                for (auto &kv : h) v.push_back({kv.second, kv.first});
+                std::sort(v.rbegin(), v.rend());
+                long tot = 0; for (auto &x : v) tot += x.first;
+                printf("68k PC histogram frames 550-568 (%ld samples):\n", tot);
+                for (size_t i = 0; i < v.size() && i < 15; i++)
+                    printf("   %06x  %8ld  %4.1f%%\n", v[i].second, v[i].first, 100.0*v[i].first/tot);
+                fflush(stdout);
+            }
+        }
         // TB_ADSPIN: what our 68k feeds the ADSP, in MAME's adsp_io.txt "X" format
         // (offset, data), so the two streams can be diffed directly.
         if (getenv("TB_ADSPIN") && frame >= 699 && frame <= 707) {
@@ -259,6 +327,261 @@ int main(int argc, char **argv) {
                     printf("\n");
                 }
                 fflush(stdout);
+            }
+        }
+        // TB_SIMCHK: every word the SIM serial ROM hands the ADSP, checked against
+        // the ROM image itself. This is timeline-independent -- it does not care
+        // what MAME was doing -- so it catches a wrong SIM address or a wrong
+        // word regardless of how far our attract sequence has drifted.
+        //
+        // It matters because nothing else covers this path: the ADSP bench
+        // replays MAME's /SIMBUF return VALUES, so our SIM addressing has never
+        // been exercised. And from the frame the 3D demo starts, the ADSP loads
+        // ~500 words of its own program memory per frame out of this ROM
+        // (2,500-3,000 reads/frame, zero 68k involvement) -- so a single wrong
+        // word here becomes corrupt ADSP code.
+        if (getenv("TB_SIMCHK")) {
+            static long n = 0, bad = 0;
+            if (top->dbg_sim_rd) {
+                uint32_t idx = top->dbg_sim_idx;
+                uint16_t got = top->dbg_sim_word;
+                n++;
+                // Structural check, independent of the data: a word must never
+                // be served while its fetch is still outstanding. Runs of
+                // identical ROM words hide a stale buffer from the value
+                // compare below; this does not depend on the data.
+                if (top->dbg_sim_fetching) {
+                    g_sim_mismatches++;
+                    if (bad < 20) { bad++; printf("frame %3d: SIM SERVED DURING FETCH idx=%05x\n", frame, idx); fflush(stdout); }
+                }
+                if (idx < 0x30000) {
+                    size_t b = 0x0c0000 + 2 * (size_t)idx;
+                    // SIM words are big-endian in the image (see stunrun_core.sv); the
+                    // value MAME's ADSP reads for word 0x83 is 0x6653.
+                    uint16_t want = (b + 1 < rom.size()) ? (uint16_t)((rom[b] << 8) | rom[b + 1]) : 0xffff;
+                    if (got != want) g_sim_mismatches++;
+                    if (got != want && bad < 20) {
+                        bad++;
+                        printf("frame %3d: SIM MISMATCH #%ld idx=%05x got=%04x want=%04x\n",
+                               frame, bad, idx, got, want);
+                        fflush(stdout);
+                    } else if (got != want) bad++;
+                }
+            }
+            static int lastf = -1;
+            if (frame != lastf) {
+                if (n > 0 && lastf >= 0)
+                    printf("frame %3d: SIM reads=%6ld  mismatches=%ld\n", lastf, n, bad);
+                n = 0; lastf = frame;
+            }
+        }
+        // TB_ADSPWR: where the ADSP actually writes in data space. MAME's ADSP
+        // hammers one address (0x2002, SOMLATCH); ours spreads writes across the
+        // whole 0x2000-0x2007 I/O block, so print the top addresses to see the
+        // shape of the walk.
+        if (getenv("TB_ADSPWR")) {
+            static std::map<uint32_t,long> h; static bool shown = false;
+            auto &core = top->rootp->vlSymsp->TOP__tb_system_top__core;
+            if (frame >= 705 && frame <= 707 && core.adsp__DOT__dbg_dm_wr)
+                h[core.adsp__DOT__dbg_dm_addr]++;
+            if (frame > 707 && !shown && !h.empty()) {
+                shown = true;
+                std::vector<std::pair<long,uint32_t>> v;
+                for (auto &kv : h) v.push_back({kv.second, kv.first});
+                std::sort(v.rbegin(), v.rend());
+                printf("ADSP data-space write addresses, frames 705-707 (top 20):\n");
+                for (size_t i = 0; i < v.size() && i < 20; i++)
+                    printf("   dm[%04x] %ld\n", v[i].second, v[i].first);
+                fflush(stdout);
+            }
+        }
+        // TB_REGDUMP: the ADSP's full register state at frame TB_REGDUMP, in the
+        // exact name=hex format tools/trace_adsp.lua writes to adsp_start.txt,
+        // so `diff` against MAME's dump at its equivalent frame answers "did
+        // the ADSP arrive at the kick in the same state?" -- PM, DM and the
+        // SIM stream are already verified identical, so this is what is left.
+        if (getenv("TB_REGDUMP")) {
+            static bool done = false;
+            if (!done && frame >= atoi(getenv("TB_REGDUMP"))) {
+                done = true;
+                auto &c = top->rootp->vlSymsp->TOP__tb_system_top__core;
+                FILE *g = fopen("../artifacts/rtl_adsp_regs.txt", "w");
+                #define R(n, v) fprintf(g, "%s=%x\n", n, (unsigned)(v))
+                R("AX0", c.adsp__DOT__r_ax0); R("AX1", c.adsp__DOT__r_ax1); R("AY0", c.adsp__DOT__r_ay0); R("AY1", c.adsp__DOT__r_ay1);
+                R("AR", c.adsp__DOT__r_ar); R("AF", c.adsp__DOT__r_af);
+                R("MX0", c.adsp__DOT__r_mx0); R("MX1", c.adsp__DOT__r_mx1); R("MY0", c.adsp__DOT__r_my0); R("MY1", c.adsp__DOT__r_my1);
+                R("MR0", c.adsp__DOT__r_mr0); R("MR1", c.adsp__DOT__r_mr1); R("MR2", c.adsp__DOT__r_mr2); R("MF", c.adsp__DOT__r_mf);
+                R("SI", c.adsp__DOT__r_si); R("SE", c.adsp__DOT__r_se); R("SB", c.adsp__DOT__r_sb); R("SR0", c.adsp__DOT__r_sr0); R("SR1", c.adsp__DOT__r_sr1);
+                R("AX0_SEC", c.adsp__DOT__x_ax0); R("AX1_SEC", c.adsp__DOT__x_ax1); R("AY0_SEC", c.adsp__DOT__x_ay0); R("AY1_SEC", c.adsp__DOT__x_ay1);
+                R("AR_SEC", c.adsp__DOT__x_ar); R("AF_SEC", c.adsp__DOT__x_af);
+                R("MX0_SEC", c.adsp__DOT__x_mx0); R("MX1_SEC", c.adsp__DOT__x_mx1); R("MY0_SEC", c.adsp__DOT__x_my0); R("MY1_SEC", c.adsp__DOT__x_my1);
+                R("MR0_SEC", c.adsp__DOT__x_mr0); R("MR1_SEC", c.adsp__DOT__x_mr1); R("MR2_SEC", c.adsp__DOT__x_mr2); R("MF_SEC", c.adsp__DOT__x_mf);
+                R("SI_SEC", c.adsp__DOT__x_si); R("SE_SEC", c.adsp__DOT__x_se); R("SB_SEC", c.adsp__DOT__x_sb); R("SR0_SEC", c.adsp__DOT__x_sr0); R("SR1_SEC", c.adsp__DOT__x_sr1);
+                for (int i = 0; i < 8; i++) { char n[4]; snprintf(n, 4, "I%d", i); R(n, c.adsp__DOT__r_i[i]); }
+                for (int i = 0; i < 8; i++) { char n[4]; snprintf(n, 4, "L%d", i); R(n, c.adsp__DOT__r_l[i]); }
+                for (int i = 0; i < 8; i++) { char n[4]; snprintf(n, 4, "M%d", i); R(n, c.adsp__DOT__r_m[i]); }
+                R("PX", c.adsp__DOT__px); R("CNTR", c.adsp__DOT__cntr); R("ASTAT", c.adsp__DOT__astat); R("SSTAT", c.adsp__DOT__sstat); R("MSTAT", c.adsp__DOT__mstat);
+                R("PCSP", c.adsp__DOT__pc_sp); R("CNTRSP", c.adsp__DOT__cntr_sp); R("STATSP", c.adsp__DOT__stat_sp); R("LOOPSP", c.adsp__DOT__loop_sp);
+                R("IMASK", c.adsp__DOT__imask); R("ICNTL", c.adsp__DOT__icntl); R("PC", c.adsp__DOT__pc);
+                #undef R
+                fclose(g);
+                printf("frame %3d: dumped ADSP registers to artifacts/rtl_adsp_regs.txt\n", frame); fflush(stdout);
+            }
+        }
+        // TB_ADSPPC: one PC per retired ADSP instruction for frames 705-706, to
+        // diff against MAME's PC-only trace from its own kick and find the first
+        // instruction where the two machines part company.
+        if (getenv("TB_ADSPPC")) {
+            static FILE *pf = nullptr; static long n = 0;
+            if (frame >= 705 && frame <= 706 && top->dbg_adsp_instr) {
+                if (!pf) pf = fopen("../artifacts/rtl_adsp_pc.txt", "w");
+                fprintf(pf, "%04x\n", top->dbg_adsp_pc); n++;
+            }
+            if (frame == 707 && pf) { fclose(pf); pf = nullptr; printf("ADSP PC trace: %ld instructions\n", n); fflush(stdout); }
+        }
+        // TB_ADSPIO: the ADSP's complete stimulus and access stream for frames
+        // 704-706 in tools/trace_adsp.lua's adsp_io.txt format (R/W = ADSP
+        // data-space accesses, X/P = 68k data/program writes, C = 68k control
+        // latch), so it can be diffed line-for-line against MAME's window. The
+        // PCs agree for 924 instructions after the kick and then part; the first
+        // R line whose value differs, or the first X/P/C line that is out of
+        // place, is the input that made them part.
+        if (getenv("TB_ADSPIO")) {
+            static FILE *f = nullptr; static int pbr = -1, phalt = -1, prst = -1, pbank = -1;
+            auto &c = top->rootp->vlSymsp->TOP__tb_system_top__core;
+            if (frame >= 704 && frame <= 706) {
+                if (!f) f = fopen("../artifacts/rtl_adsp_io.txt", "w");
+                if (c.adsp__DOT__dbg_dm_rd) fprintf(f, "R %04x %04x\n", c.adsp__DOT__dbg_dm_addr, c.adsp__DOT__dbg_dm_data);
+                if (c.adsp__DOT__dbg_dm_wr) fprintf(f, "W %04x %04x\n", c.adsp__DOT__dbg_dm_addr, c.adsp__DOT__dbg_dm_data);
+                if (top->dbg_dm_we_68k) fprintf(f, "X %04x %04x\n", top->dbg_dm_addr_68k, top->dbg_dm_wdata_68k);
+                if (top->dbg_pm_we_68k) fprintf(f, "P %04x %06x\n", top->dbg_pm_addr_68k, top->dbg_pm_wdata_68k);
+                if ((int)top->dbg_br_n != pbr)          { fprintf(f, "C 5 %d\n", top->dbg_br_n);  pbr = top->dbg_br_n; }
+                if ((int)top->dbg_halt_n != phalt)      { fprintf(f, "C 6 %d\n", top->dbg_halt_n); phalt = top->dbg_halt_n; }
+                if ((int)top->dbg_adsp_reset_o != prst) { fprintf(f, "C 7 %d\n", !top->dbg_adsp_reset_o); prst = top->dbg_adsp_reset_o; }
+                if ((int)top->dbg_adsp_bank != pbank)   { fprintf(f, "C 3 %d\n", top->dbg_adsp_bank); pbank = top->dbg_adsp_bank; }
+            }
+            if (frame == 707 && f) { fclose(f); f = nullptr; printf("ADSP io stream written to artifacts/rtl_adsp_io.txt\n"); fflush(stdout); }
+        }
+        // TB_MEMDUMP: dump the ADSP program and data RAM at frame TB_MEMDUMP so it
+        // can be diffed against MAME's at the same frame. The ADSP bench loads PM
+        // from MAME's dump, so nothing has ever checked the copy our own 68k
+        // downloads -- and a corrupt ADSP program would idle harmlessly for
+        // hundreds of frames and only detonate when the 3D demo first runs it.
+        if (getenv("TB_MEMDUMP")) {
+            static bool done = false;
+            int at = atoi(getenv("TB_MEMDUMP"));
+            if (!done && frame >= at) {
+                done = true;
+                auto &pm = top->rootp->vlSymsp->TOP__tb_system_top__core.adsp__DOT__pmem;
+                auto &dm = top->rootp->vlSymsp->TOP__tb_system_top__core.adsp__DOT__dmem;
+                FILE *g = fopen("../artifacts/rtl_adsp_mem.txt", "w");
+                fprintf(g, "PMEM\n");
+                for (int i = 0; i < 8192; i++) fprintf(g, "%06x\n", pm[i] & 0xffffff);
+                fprintf(g, "DMEM\n");
+                for (int i = 0; i < 8192; i++) fprintf(g, "%04x\n", dm[i] & 0xffff);
+                fclose(g);
+                printf("frame %3d: dumped ADSP PMEM+DMEM to artifacts/rtl_adsp_mem.txt\n", frame);
+                fflush(stdout);
+            }
+        }
+        // TB_SOMTRACE: the whole 68k<->ADSP SOM protocol, reconstructed.
+        //
+        // MAME's deferred_adsp_bank_switch documents the buffer format: word 0
+        // of a bank is the TOTAL LENGTH, word 1 the offset to the table. The
+        // ADSP cannot know the length until it has emitted the whole block, so
+        // it writes the body first and then rewinds with /SOMCLK to store word 0
+        // last. A bank whose word 0 is stale therefore means the 68k looked at a
+        // buffer the ADSP had not finished -- which is what -1300 is.
+        //
+        // FrameUpdate (68k 0x2c372) only reads a bank after AdspIrqService has
+        // set ff9bb4, and it flips the hardware bank (818006/818016) from its own
+        // shadow ff9bb2 immediately before. So there are exactly three ways to
+        // land on an unfinished buffer:
+        //   (A) the ADSP signalled done early,
+        //   (B) the 68k read the wrong bank (bank phase inverted vs the ADSP),
+        //   (C) the ADSP's words landed at the wrong offsets.
+        // Shadowing both banks tells them apart: print word 0/1 of BOTH banks at
+        // the moment SomCopyToGsp latches its length.
+        if (getenv("TB_SOMTRACE")) {
+            static uint16_t shadow[2][8192];
+            static long wr[2] = {0,0}, wrf[2] = {0,0};
+            static long gint = 0, xout = 0, somclk = 0;
+            static int lastf = -1, pbank = -1, pbr = -1, phalt = -1;
+            static uint16_t prevlen = 0xdead;
+            static bool once = false;
+            int lo = 690, hi = 716;
+
+            // ADSP SOMLATCH: lands in the bank the 68k is NOT looking at
+            if (top->dbg_som_wr) {
+                int b = top->dbg_adsp_bank ? 0 : 1;
+                shadow[b][top->dbg_som_ptr & 0x1fff] = top->dbg_io_wdata;
+                wr[b]++; wrf[b]++;
+            }
+            if (top->dbg_somclk) {
+                somclk++;
+                if (frame >= lo && frame <= hi)
+                    printf("  f%3d SOMCLK ptr=%u (adsp writes bank %d)\n",
+                           frame, top->dbg_io_wdata & 0x1fff, top->dbg_adsp_bank ? 0 : 1);
+            }
+            if (top->dbg_gint_wr) gint++;
+            if (top->dbg_xout_wr) xout++;
+
+            // 68k-side control-latch events
+            if ((int)top->dbg_adsp_bank != pbank) {
+                if (frame >= lo && frame <= hi)
+                    printf("  f%3d 68k BANK -> %d   (68k now reads bank %d, adsp writes bank %d)\n",
+                           frame, top->dbg_adsp_bank, top->dbg_adsp_bank, top->dbg_adsp_bank ? 0 : 1);
+                pbank = top->dbg_adsp_bank;
+            }
+            if ((int)top->dbg_br_n != pbr) {
+                if (frame >= lo && frame <= hi)
+                    printf("  f%3d 68k /BR = %d %s\n", frame, top->dbg_br_n,
+                           top->dbg_br_n ? "(ADSP released)" : "(ADSP halted)");
+                pbr = top->dbg_br_n;
+            }
+            if ((int)top->dbg_halt_n != phalt) {
+                if (frame >= lo && frame <= hi)
+                    printf("  f%3d 68k /HALT = %d\n", frame, top->dbg_halt_n);
+                phalt = top->dbg_halt_n;
+            }
+
+            // the moment SomCopyToGsp latches a length
+            uint16_t v = top->rootp->vlSymsp->TOP__tb_system_top__core.__PVT__main__DOT__wram[0x2da7];
+            if (v != prevlen) {
+                prevlen = v;
+                int b = top->dbg_adsp_bank;
+                bool bad = ((int16_t)v < 0 || v > 16000);
+                printf("frame %3d: SomCopyToGsp len=%6d (0x%04x)%s\n"
+                       "          68k reads bank %d: w0=%04x w1=%04x   (%ld words ever written here)\n"
+                       "          adsp fills bank %d: w0=%04x w1=%04x   (%ld words ever written here)\n"
+                       "          som_ptr=%u  this frame: bank0 +%ld, bank1 +%ld\n",
+                       frame, (int16_t)v, v, bad ? "   <-- BAD" : "",
+                       b,   shadow[b][0],   shadow[b][1],   wr[b],
+                       b^1, shadow[b^1][0], shadow[b^1][1], wr[b^1],
+                       top->dbg_som_ptr, wrf[0], wrf[1]);
+                if (bad && !once) {
+                    once = true;
+                    // where does the -1 terminator actually sit in each bank?
+                    for (int bb = 0; bb < 2; bb++) {
+                        int term = -1;
+                        for (int i = 1; i < 8192; i++) if (shadow[bb][i] == 0xffff) { term = i; break; }
+                        printf("          bank %d: first 0xffff at word %d; first 8 words:", bb, term);
+                        for (int i = 0; i < 8; i++) printf(" %04x", shadow[bb][i]);
+                        printf("\n");
+                    }
+                }
+                fflush(stdout);
+            }
+
+            if (frame != lastf) {
+                if (lastf >= lo && lastf <= hi) {
+                    printf("frame %3d: somlatch b0=%-5ld b1=%-5ld  somclk=%-3ld gint=%-4ld xout=%-3ld "
+                           "| 68k reads bank %d  ptr=%u\n",
+                           lastf, wrf[0], wrf[1], somclk, gint, xout,
+                           top->dbg_adsp_bank, top->dbg_som_ptr);
+                    fflush(stdout);
+                }
+                wrf[0] = wrf[1] = 0; somclk = gint = xout = 0; lastf = frame;
             }
         }
         // TB_SOMLEN: SomCopyToGsp reads the stream length from the first word of
@@ -504,7 +827,8 @@ int main(int argc, char **argv) {
     }
     unsigned merr = top->model_errors;
     printf("model errors %u\n", merr);
-    printf("%s\n", merr ? "FAIL" : "PASS");
+    if (g_sim_mismatches) printf("SIM ROM words wrong: %ld\n", g_sim_mismatches);
+    printf("%s\n", (merr || g_sim_mismatches) ? "FAIL" : "PASS");
     delete top;
     return merr ? 1 : 0;
 }

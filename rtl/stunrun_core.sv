@@ -278,26 +278,36 @@ module stunrun_core (
     logic  [1:0] mp;                      // eprom page (data * 0x10000)
     logic [17:0] sim_next_idx;            // index the buffer holds
     logic        sim_valid, sim_fetching;
-    logic [15:0] sim_word, sim_out;
+    logic [15:0] sim_word;
     logic        rd_pend;                 // an /SIMBUF read is waiting for its word
     logic        xflag_r, gint_r;
     logic [13:0] som_addr_a;
     logic [12:0] som_ptr;
     wire  [17:0] sim_idx = {mp, sim_addr};
     wire         sim_hit = sim_valid && (sim_next_idx == sim_idx);
+    // The ADSP samples io_rdata in the SAME clock it raises io_rd unless io_wait
+    // is high in that clock (S_MEM: `if (io_pending_rd && !io_wait) latch`).
+    // So the word must be on io_rdata combinationally, and io_wait must cover
+    // the io_rd clock itself -- a registered "pending" flag is one clock late
+    // and lets the core latch the previous read's word. That off-by-one fed
+    // the ADSP its 3D overlay code shifted by one word out of the SIM ROM.
+    wire         sim_rd_now  = io_rd && (io_addr[2:0] == 3'd0);
+    wire         sim_consume = (sim_rd_now || rd_pend) && sim_hit;
 
     always_ff @(posedge clk) begin
         if (mreset) begin
             sim_addr <= '0; mp <= '0; sim_valid <= 1'b0; sim_fetching <= 1'b0; c_req[2] <= 1'b0;
-            xflag_r <= 1'b0; gint_r <= 1'b0; som_ptr <= '0; sim_next_idx <= '0; rd_pend <= 1'b0; sim_out <= '0;
+            xflag_r <= 1'b0; gint_r <= 1'b0; som_ptr <= '0; sim_next_idx <= '0; rd_pend <= 1'b0;
         end else begin
-            // /SIMBUF read: io_rd is a pulse; hold io_wait until the word is
-            // buffered, present it, then advance to the next word
-            if (io_rd && io_addr[2:0] == 3'd0) rd_pend <= 1'b1;
-            if (rd_pend && sim_hit) begin
-                sim_out  <= sim_word;
-                sim_addr <= sim_addr + 16'd1;
-                rd_pend  <= 1'b0;
+            // /SIMBUF read: serve from the one-word buffer the clock io_rd is
+            // raised if it already holds the word, else hold io_wait until it
+            // does; advance only when a word is actually consumed. MAME does
+            // not advance past the end of the ROM (it returns 0xff and leaves
+            // the address alone), so neither do we.
+            if (sim_rd_now && !sim_hit) rd_pend <= 1'b1;
+            if (sim_consume) begin
+                if (sim_idx < 18'h30000) sim_addr <= sim_addr + 16'd1;
+                rd_pend <= 1'b0;
             end
             if (adsp_int_clr) gint_r <= 1'b0;
             // prefetch whenever the buffer does not hold the next word
@@ -305,12 +315,25 @@ module stunrun_core (
                 if (sim_idx < 18'h30000) begin
                     c_addr[2] <= 24'h060000 + {6'd0, sim_idx};      // byte 0x0c0000 >> 1
                     c_req[2]  <= 1'b1; sim_fetching <= 1'b1; sim_next_idx <= sim_idx;
+                    // The buffer does not hold this word until the SDRAM
+                    // answers. Retargeting sim_next_idx without dropping
+                    // sim_valid made sim_hit true one clock later with the
+                    // PREVIOUS word still in sim_word: a read landing before
+                    // the ack (12 clocks apart in a streaming loop; the ack
+                    // can be hundreds under contention) took word N-1 as N.
+                    sim_valid <= 1'b0;
                 end else begin
                     sim_word <= 16'h00ff; sim_valid <= 1'b1; sim_next_idx <= sim_idx;
                 end
             end
             if (sim_fetching && c_ack[2]) begin
-                c_req[2] <= 1'b0; sim_fetching <= 1'b0; sim_word <= sd_rdata; sim_valid <= 1'b1;
+                // The image stores SIM words high byte first (the .90h/.10h/.9h
+                // byte at the even address, .90k/.10k/.9k at the odd), the same
+                // big-endian layout as the 68k program region; the SDRAM client
+                // port is little-endian, so swap. MAME's ADSP reads word 0x83 as
+                // 0x6653; unswapped we handed it 0x5366, and the 3D demo's first
+                // loop count came out as 0x0a00 instead of 0x000a.
+                c_req[2] <= 1'b0; sim_fetching <= 1'b0; sim_word <= {sd_rdata[7:0], sd_rdata[15:8]}; sim_valid <= 1'b1;
             end
             if (io_wr) begin
                 case (io_addr[2:0])
@@ -326,8 +349,8 @@ module stunrun_core (
         end
     end
     assign c_we[2] = 1'b0; assign c_wdata[2] = '0; assign c_be[2] = 2'b11;
-    assign io_wait  = rd_pend && !sim_hit;
-    assign io_rdata = (io_addr[2:0] == 3'd0) ? sim_out : 16'h0000;
+    assign io_wait  = (sim_rd_now || rd_pend) && !sim_hit;
+    assign io_rdata = (io_addr[2:0] == 3'd0) ? sim_word : 16'h0000;
     assign adsp_int = gint_r;
     assign adsp_xflag = xflag_r;
 

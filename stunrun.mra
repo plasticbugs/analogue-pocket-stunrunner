@@ -44,7 +44,7 @@
             <part name="136070-2111.210w" crc="47f010ad" map="01"/>
         </interleave>
 
-        <!-- ADSP SIM data: 16-bit little-endian words, low byte from the h socket -->
+        <!-- ADSP SIM data: 16-bit words stored big-endian like the 68k program (h socket byte at the even address = high byte, k at the odd = low); the core byte-swaps on fetch -->
         <interleave output="16">
             <part name="136070-2121.90h" crc="0ebf8e58" map="10"/>
             <part name="136070-2118.90k" crc="fb98abaf" map="01"/>

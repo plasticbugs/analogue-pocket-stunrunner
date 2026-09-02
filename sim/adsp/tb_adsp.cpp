@@ -190,6 +190,12 @@ int main(int argc, char **argv) {
     // IOWAIT=N: hold io_wait for a pseudo-random 0..N clocks after every io_rd,
     // to prove the core tolerates a slow SIM prefetcher (it must skip cen pulses).
     int iowait_max = getenv("IOWAIT") ? atoi(getenv("IOWAIT")) : 0;
+    // HALT=N: assert `halt` for a pseudo-random 1..N clocks at pseudo-random
+    // moments -- including mid-instruction -- the way the 68k's /BR does in
+    // AdspIrqService on the real board. The core must stop only at an
+    // instruction boundary and resume with no state disturbed.
+    int halt_max = getenv("HALT") ? atoi(getenv("HALT")) : 0;
+    int halt_hold = 0;
     uint32_t lfsr = 0xACE1u;
 
     RegState st0, stmid, stend;
@@ -256,7 +262,9 @@ int main(int argc, char **argv) {
                 uint32_t nv = (e.addr & 1) ? ((cur & 0xff0000) | (e.val & 0xffff)) : ((cur & 0x00ffff) | ((e.val & 0xff) << 16));
                 top->pm_ext_wdata = nv; top->pm_ext_we = 1; tick(); top->pm_ext_we = 0; n_p++; io_idx++;
             }
-            else if (e.kind == 'C') io_idx++;
+            else if (e.kind == 'C') io_idx++;   // 68k control latch: not replayable by log position -- MAME's
+                                                 // HALT line is soft (its ADSP ran ~21 more accesses after /BR=0
+                                                 // in the kick window), so use HALT=N random injection instead
             else break;
         }
     };
@@ -327,6 +335,14 @@ int main(int argc, char **argv) {
                 // cen pulse every cen_period clocks
                 top->cen = (cycles % cen_period) == 0;
                 if (io_hold > 0) { top->io_wait = 1; io_hold--; } else top->io_wait = 0;
+                if (halt_max) {
+                    if (halt_hold > 0) { top->halt = 1; halt_hold--; }
+                    else {
+                        top->halt = 0;
+                        lfsr = (lfsr >> 1) ^ (-(lfsr & 1u) & 0xB400u);
+                        if ((lfsr % 23) == 0) halt_hold = 1 + (lfsr >> 4) % halt_max;
+                    }
+                }
                 tick();
                 top->cen = 0;
                 // IO read request: serve from the log
@@ -370,7 +386,7 @@ int main(int argc, char **argv) {
                     } else { fprintf(stderr, "DM read at instr #%llu but log has %c at %zu (%s)\n", (unsigned long long)n_instr, io_idx < io.size() ? io[io_idx].kind : '-', io_idx, t.text.c_str()); mismatches++; }
                 }
                 if (top->dbg_instr_done) done = true;
-                if (++guard > 1000) { fprintf(stderr, "instruction #%llu did not complete (pc %04X)\n", (unsigned long long)n_instr, U(pc)); failed = true; break; }
+                if (++guard > 1000 + 4 * halt_max) { fprintf(stderr, "instruction #%llu did not complete (pc %04X)\n", (unsigned long long)n_instr, U(pc)); failed = true; break; }
                 if (mismatches >= max_mis) { failed = true; break; }
             }
             n_instr++; phase_instr++;

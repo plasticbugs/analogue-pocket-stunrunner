@@ -12,8 +12,8 @@ is not here has not been verified.
 | 68010 board (`stunrun_main.sv`, TG68K, SDRAM ROM) | `sim/run_main.sh` | MAME 68010 instruction trace from reset (`artifacts/traces/m68k_boot.txt`, `-debug -debugger none`) | 43,000 of 43,000 compared PCs match in order (first 3 frames of boot: vector fetch, MOVEC VBR, RAM tests, latch setup); simulated time 0.051 s vs MAME 0.050 s (kernel pacing 3.75 cen_8m per step) |
 | JSA II sound board (`rtl/jsa/jsa2.sv`) | `sim/run_jsa.sh` | MAME command/response log + YM2151/OKI/WRIO/MIX write log + `-wavwrite` | YM2151 register stream 130,514/130,514 identical over 40 s (timing offset median +0.011 ms); WRIO 9804/9804, MIX 14/14, OKI 9/9, WRP 5/5; audio envelope ratio RTL/MAME median 1.001 (+0.01 dB) over 50 windows — see `docs/jsa.md` |
 | TMS34010 core (`rtl/gsp/`) | `sim/run_gsp.sh` | MAME GSP instruction trace (PC, ST, SP, A0–A14, B0–B14 per instruction) + end-of-window VRAM | PASS on 3 windows: boot/download (1,860,171 instr), 3D attract (88,534), title screens (3,917,724); 0 divergences over 5.87 M instructions; final VRAM word-identical; 60 mnemonics / 121 operand forms covered — `docs/gsp.md` |
-| ADSP-2100 core (`rtl/adsp/`) | `sim/run_adsp.sh` | MAME ADSP instruction trace + every data-space access + 68k RAM writes replayed | PASS on 2 windows: 5,274,473 and 22,196,327 instructions, 0 mismatches, final memories identical; also PASS with random `io_wait` stalls — `docs/adsp.md` |
-| Whole machine | `sim/run_system.sh` | MAME boot timeline (per-frame CPU PCs), MAME's title-screen frame | boots from the ROM download and reaches the title screen **pixel-identical to MAME (0 differing pixels, dy=0)** when captured on DE. Palette word-identical to MAME (1024/1024). Sound board answers the reset and receives the title-music command; all three processors run their MAME loops |
+| ADSP-2100 core (`rtl/adsp/`) | `sim/run_adsp.sh` | MAME ADSP instruction trace + every data-space access + 68k RAM writes replayed | PASS on 4 windows: 5,274,473 / 22,196,327 / 961,476 / 256,948 instructions (w4 = the 3D demo's first two frames from the trigger), 0 mismatches, final memories identical; also PASS with random `io_wait` stalls (`IOWAIT=N`, asserted from the `io_rd` clock) and random `halt` injection (`HALT=N`) — `docs/adsp.md` |
+| Whole machine | `sim/run_system.sh` | MAME boot timeline (per-frame CPU PCs), MAME's title-screen frame, MAME's 68k/ADSP protocol trace (`tools/trace_som.lua`) | boots from the ROM download and reaches the title screen **pixel-identical to MAME (0 differing pixels, dy=0)** when captured on DE; palette word-identical (1024/1024); sound board answers the reset and receives the title-music command; **enters and runs the 3D attract demo** with the 68k/ADSP handshake matching MAME's per-frame counts (see below). Every SIM ROM word the ADSP receives is checked against the image (hard gate) |
 | Synthesis (Quartus 18.1, 5CEBA4) | `./build-local.sh` | — | **fits, compiles and closes timing**: Fitter successful, 0 errors; 18,286 / 18,480 ALMs (99 %), 15,533 registers, block RAM 51 %, 22/66 DSP, 224/224 pins. **Zero negative slack** — setup and hold met at every corner (slow 0 °C / 85 °C, fast 0 °C / 85 °C), worst margin +0.116 ns. Note the worst setup corner is slow **0 °C**, not 85 °C (temperature inversion): analyse that corner explicitly, `create_timing_netlist -model slow -temperature 0 -voltage 1100`. |
 | Hardware (Pocket) | — | — | not yet built |
 
@@ -102,56 +102,99 @@ is not here has not been verified.
   MAME. The GSP's own DPYADR/DE bookkeeping was never wrong — the first
   visible line fetches VRAM row 0x3c in both MAME and the RTL.
 
-## The attract-demo reboot (open)
+## The attract-demo reboot (fixed)
 
 Symptom on hardware: the machine reboots when the title screen gives way to the
-3D attract demo. Reproduces in `sim/run_system.sh` at frame 713.
+3D attract demo. Reproduced in `sim/run_system.sh` at frame 713.
 
-The reboot is the game's own error path, not a crash we cause directly.
-`SomCopyToGsp` (68k 0x2f0ae) reads the stream length from the first word of the
-ADSP's SOM block, streams that many words to the GSP through the host port, and
-then checks the block terminator:
+**Root cause: every word of the ADSP's SIM serial ROM was byte-swapped.** The
+image stores the `.90h/.10h/.9h` byte at the even address and `.90k/.10k/.9k` at
+the odd -- big-endian words, like the 68k program region -- and the core read
+them through its little-endian SDRAM port unswapped. `docs/hardware.md`
+recorded the evidence correctly (MAME word 0 = `0x0068` with `90h[0]=0x00,
+90k[0]=0x68`) and then stated the opposite conclusion, and the packing followed
+the sentence rather than the numbers.
 
-```c
-sVar1 = *param_1;                          // length from the SOM block
-GspWriteWords(param_1 + 1, (int)sVar1);
-if ((param_1 + 1)[sVar1 + -1] != -1) HaltForWatchdog();
-```
+Nothing reads the SIM ROM until the 3D demo starts. Its third read is the
+demo's outer loop count (`011F: I0 = DM($2000)` ... `014D: CNTR = DM($0032)`):
+MAME's ADSP gets `0x000a`; ours got `0x0a00`, a 2,560-iteration loop that
+walked its DAG off the end of data RAM into the `0x2000-0x2007` I/O block --
+~512 stray writes each to SOMLATCH, /SOMCLK, /XOUT and /GINT per frame where
+MAME writes /GINT once every three. One of those landed on SOM word 0, the
+block length the real program writes last; `SomCopyToGsp` read it as -1300,
+`GspWriteWords` ran unbounded past the top of VRAM, the GSP interrupt vectors
+went with it, and the 68k called `HaltForWatchdog()`.
 
-At frame 706 that length reads **-1300**. `GspWriteWords` takes it signed, so the
-loop is unbounded: 34,385 words that wrap past the top of the GSP address space
-and overwrite the interrupt vectors living in the top of VRAM. The next display
-interrupt vectors through ffffffff to fffffff0, the GSP runs away through empty
-memory, the 68k halts deliberately, and the watchdog resets the machine.
+Two further defects in the same path were found and fixed on the way, each
+real, each insufficient alone:
 
-The -1300 is not corruption. The 68k is reading a half-built buffer: our ADSP
-had written ~716 of the ~7,451 words the block needs.
+- `stunrun_core.sv` SIM glue: the ADSP core samples `io_rdata` in the same
+  clock it raises `io_rd` unless `io_wait` is high *in that clock*; the glue
+  derived `io_wait` from a registered flag, one clock late, so the core latched
+  the previous read's word. Then, with that fixed, the prefetcher retargeted
+  `sim_next_idx` at fetch issue without dropping `sim_valid`, so a read landing
+  before the SDRAM ack (12 clocks apart in a streaming loop; the ack can take
+  hundreds under contention) took word N-1 as N.
+- `stunrun_main.sv`: 68k reads of the ADSP program/data RAMs and the SOM buffer
+  were given one cycle; their address is registered (the port is shared with
+  the write path), so they need two. `B_RAM_RD1` supplies it.
 
-**Root cause is upstream of all three CPUs.** Each is verified over the failing
-frames: GSP windows w7 (709-716) and w8 (700-710) replay exactly with matching
-VRAM; ADSP window w3 (699-707) is 961,476 instructions with 0 mismatches and 0
-end-of-window differences in registers, data and program memory. The 68k runs
-its own code faithfully.
+**Why five verified cores did not catch it.** Every bench replays MAME's I/O
+*values*, so the SIM path never executed under test; the whole-machine bench
+reaches the title screen pixel-identical because nothing reads the SIM ROM, the
+SOM buffer or the ADSP RAMs before the demo; a byte-wise compare of the SIM
+region against MAME's passed because the bytes *are* identical; and the first
+SIM self-check computed its expectation with the RTL's own assumption.
 
-What actually differs is *when the demo starts*:
+**How it was found**, recorded because three theories were wrong first:
 
-| | 3D demo begins |
-|---|---|
-| MAME | frame 558-559: the 68k uploads 483 words to ADSP data RAM, triggers, and the ADSP produces ~1,800 SOM words per frame from then on, retriggered every 3 frames |
-| ours | never: the ADSP is idle from frame 400 to 705, then runs briefly at 706 and the machine dies |
+1. *"We run at 77 % of MAME's speed so the 68k reads an unfilled buffer"* -- a
+   category error. A uniformly slow machine cannot desynchronise a handshake.
+2. Trace the **protocol**, not the instructions: `tools/trace_som.lua` (MAME)
+   and `TB_SOMTRACE` (RTL) log the 68k/ADSP handshake, NVRAM-aligned so frame
+   numbers compare. One 12-second MAME run showed a *structural* difference
+   (/GINT 1-2 per frame vs 110).
+3. Eliminate by measurement: I/O map, SIM bytes, ADSP PM+DM at the kick
+   (2,718 nonzero words, 0 differ -- an earlier frame-60 compare was of two
+   all-zero memories and proved nothing: **print the nonzero count next to the
+   diff count**), /MP pages and SIMCLK range, registers at the kick.
+4. With the state identical at the kick, replay MAME's kick window through the
+   ADSP bench (`artifacts/adsp/w4`, now a permanent window): PASS, with
+   `IOWAIT` stalls and the new `HALT` injection. So the core was right and an
+   *input* was wrong. A PC-only diff (`tools/compare_adsp_pcs.py`) put the
+   divergence at instruction #924, at the exit of a loop whose count came from
+   the third SIM read -- and the ROM bytes at that index, read as MAME's ADSP
+   reads them, were the swap.
+5. `TB_SIMCHK` now expects big-endian words and is a hard gate (a mismatch, or
+   a word served while its fetch is outstanding, turns PASS to FAIL).
 
-So our machine reaches the demo about 147 frames late and in a state where the
-68k reads a buffer the ADSP has not filled. Finding why needs a 68k-level
-comparison against MAME across the attract sequence (roughly frames 260-560),
-which no tool covers yet: `compare_pcs.py` exists but there is no MAME 68k
-window tracer to feed it.
+**Result** (`TB_SIMCHK=1 TB_SOMTRACE=1 sim/run_system.sh 790`): the machine
+enters the 3D demo at frame 705 and runs it to the end of the run, 85 frames,
+without rebooting. SIM: 0 mismatches over ~2,700 reads per frame. The
+68k/ADSP protocol now matches MAME's almost number for number -- SOM words per
+frame 1860/1862/1657 then 471+1628 (MAME: 1828/1873/1675 then 474+1628), /GINT
+1-2 per frame, /SOMCLK 2 per 3 frames, the bank flipping every 3 frames --
+and every `SomCopyToGsp` length is sane (5847, 5936, 6145, ...; MAME's first
+buffer is 5850 words).
 
-Two traps recorded so they are not hit again:
+Recorded so they are not hit again:
 
-- **MAME Lua taps must be held in a GLOBAL table.** A chunk-local one is
-  garbage-collected when the script chunk ends and every tap silently stops
-  firing -- reporting zeros that look like real measurements. This invalidated
-  several results here before it was spotted.
-- **`dbg_68k_pc` in the system bench is the address bus, not the PC.** Comparing
-  it against MAME's PC shows nonsense (stack addresses like fffffe18). Use
+- **MAME Lua taps must be held in a GLOBAL table**, or they are garbage-
+  collected and report zeros that look like measurements.
+- **`dbg_68k_pc` in the system bench is the address bus, not the PC.** Use
   `dbg_68k_exepc`.
+- **The ADSP data space is word-addressed in MAME Lua** (addrbus shift -1): do
+  not `>> 1` a tap offset like a 68k byte address.
+- **`tools/trace_adsp.lua` needs `-debug -debugger none`**; without it the
+  window never closes and `adsp_io.txt` grows without bound (16 GB before it
+  was noticed).
+- **MAME's ADSP HALT is soft.** Its ADSP ran 21 more accesses after `/BR=0` in
+  the kick window; ours stops at the next instruction boundary. Not the cause
+  here, but the mailbox handshake in `AdspIrqService` depends on that slack.
+- **Our ADSP reset clears every register; MAME's leaves I/M/L, CNTR and the
+  compute registers alone.** Not exercised at the kick (the 68k only pulses
+  reset at boot), but a latent difference.
+
+Still open, and separate: the attract sequence runs ~147 frames late (MAME
+starts the demo at frame 559, we start at 705). That is throughput, not logic;
+this fix does not change it.

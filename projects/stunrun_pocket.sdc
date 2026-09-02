@@ -537,7 +537,9 @@ set_multicycle_path -hold  1 -from [get_registers {*|adsp2100:*|ir[*]}] -to [get
 # moved. The bus sub-states that also read the kernel (B_RAM_RD's rd_mux,
 # B_DM_MERGE and B_PM_MERGE's data_write/uds/lds) run after that sample and are
 # further away still. The 68010's speed is set by the token bucket (one step per
-# 3.75 cen_8m, about 45 clocks), so a five-clock bus FSM costs nothing.
+# 3.75 cen_8m, about 45 clocks), so a six-clock bus FSM costs nothing (the
+# ADSP program/data RAMs and the SOM buffer take one extra state, B_RAM_RD1,
+# because their address is registered here rather than taken live off the bus).
 #
 # One exception now covers the whole module; the 1/0 override is gone because
 # the FSM no longer samples on the next clock.

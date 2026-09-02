@@ -89,8 +89,8 @@ module adsp2100 (
     // matters here), which is what lets both memories infer as M10K block RAM
     // rather than 300k+ flip-flops. Keep this form: the merged single-block
     // write-through template does NOT infer on Quartus 18.1.
-    (* ramstyle = "no_rw_check" *) logic [23:0] pmem [8192];
-    (* ramstyle = "no_rw_check" *) logic [15:0] dmem [8192];
+    (* ramstyle = "no_rw_check" *) logic [23:0] pmem [8192] /* verilator public_flat_rw */;
+    (* ramstyle = "no_rw_check" *) logic [15:0] dmem [8192] /* verilator public_flat_rw */;
 
     logic [12:0] pm_a_addr;
     logic        pm_a_we;

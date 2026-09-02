@@ -303,9 +303,15 @@ hardware.
 | 7 | | /MP: eprom_base = data * 0x10000 |
 
 SIM ROM: 384 KB = 3 × 128 KB pages (`/MP` selects a 64 K-word page;
-words 0..0x2ffff), 16-bit words, **high byte from the `.90k/.10k/.9k` ROMs,
-low byte from `.90h/.10h/.9h`** (verified: MAME region word 0 = 0x0068 with
-90h[0]=0x00, 90k[0]=0x68).
+words 0..0x2ffff), 16-bit words, **high byte from the `.90h/.10h/.9h` ROMs,
+low byte from `.90k/.10k/.9k`** (MAME region word 0 = 0x0068 with 90h[0]=0x00,
+90k[0]=0x68; word 0x83 = 0x6653 as the ADSP reads it). An earlier revision of
+this paragraph stated the opposite of its own evidence and the packing
+followed it: the image stores the `.h` byte at the even address, i.e. the
+words are big-endian like the 68k region, and `stunrun_core.sv` byte-swaps on
+fetch. This inverted every SIM word whose bytes differ and was invisible to a
+byte-wise compare of the region, to the ADSP bench (which replays MAME's
+values) and to a self-check written with the same assumption.
 
 ### 5.2 ADSP-2100 core facts (for the RTL)
 
@@ -426,7 +432,7 @@ lowers the game's frame rate but stays correct because the 68k waits on it).
 | offset | size | content | byte order |
 |---|---|---|---|
 | 0x000000 | 0x0c0000 | 68010 program | big-endian words: even byte from `.200x`, odd from `.210x` |
-| 0x0c0000 | 0x060000 | ADSP SIM data | little-endian words: even (low) byte `.90h/.10h/.9h`, odd (high) `.90k/.10k/.9k` |
+| 0x0c0000 | 0x060000 | ADSP SIM data | big-endian words: even (high) byte `.90h/.10h/.9h`, odd (low) `.90k/.10k/.9k`; the core swaps on fetch |
 | 0x120000 | 0x040000 | OKI ADPCM | `.1fh .1ef .1de .1cd` in order |
 | 0x160000 | 0x010000 | JSA 6502 program | `136070-2123.10c` |
 | 0x170000 | 0x000800 | 200E timekeeper default contents | `stunrun.200e` |

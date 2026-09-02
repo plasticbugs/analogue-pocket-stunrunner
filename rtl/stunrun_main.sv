@@ -182,7 +182,7 @@ module stunrun_main #(
     // ------------------------------------------------------------------------
     // Bus cycle sequencer
     // ------------------------------------------------------------------------
-    typedef enum logic [3:0] {B_IDLE, B_WAIT_ROM, B_WAIT_GSP, B_PM_RD, B_PM_MERGE, B_RAM_RD, B_DM_RD, B_DM_MERGE} bst_t;
+    typedef enum logic [3:0] {B_IDLE, B_WAIT_ROM, B_WAIT_GSP, B_PM_RD, B_PM_MERGE, B_RAM_RD, B_RAM_RD1, B_DM_RD, B_DM_MERGE} bst_t;
     bst_t bst;
     logic [5:0] tok;                 // step tokens from cen_8m
     logic       irq_timer_pend;
@@ -352,17 +352,32 @@ module stunrun_main #(
                             end else if (sel_gsp) begin
                                 host_addr <= {A[3], ~A[2]}; host_rd <= 1'b1; bst <= B_WAIT_GSP;
                             end else begin
-                                // block RAMs answer next cycle; latches are combinational
+                                // Latches are combinational and the work/ZRAM
+                                // block RAMs are addressed by the LIVE bus, so
+                                // their data is valid one cycle from here. The
+                                // ADSP program/data RAMs and the SOM buffer are
+                                // not: their ports are shared with the write
+                                // path, so the address is registered here and
+                                // the RAM only sees it on the next edge -- their
+                                // data is valid one cycle later again. Sampling
+                                // them in B_RAM_RD returns the PREVIOUS such
+                                // read's word. Only three things ever read them
+                                // (AdspIrqService's mailbox word 0x1fe3, and
+                                // SomCopyToGsp/GspWriteWords streaming the SOM
+                                // buffer) and none of them run until the 3D
+                                // attract demo starts, which is why this showed
+                                // up as "reboots when the demo begins".
                                 if (sel_pm) pm_addr <= A[14:2];
                                 if (sel_dm) dm_addr <= A[13:1];
                                 if (sel_som) som_addr <= {adsp_bank, A[13:1]};
                                 if (sel_snd) snd_resp_rd <= 1'b1;          // clears IRQ4
                                 if (sel_sres) snd_reset <= 1'b1;
-                                bst <= B_RAM_RD;
+                                bst <= (sel_pm || sel_dm || sel_som) ? B_RAM_RD1 : B_RAM_RD;
                             end
                         end
                     end
                 end
+                B_RAM_RD1: bst <= B_RAM_RD;          // registered-address RAM: one more cycle
                 B_RAM_RD: begin
                     data_in <= rd_mux; clkena <= 1'b1; bst <= B_IDLE;
                 end

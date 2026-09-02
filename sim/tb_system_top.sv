@@ -41,9 +41,21 @@ module tb_system_top (
     output logic [15:0] dbg_hstctll, dbg_hstctlh,
     output logic        dbg_gsp_instr,
     output logic        dbg_som_wr, dbg_adsp_wait, dbg_adsp_instr,
+    output logic  [5:0] dbg_c_ack,
+    output logic        dbg_b_active,
     output logic        dbg_dm_we_68k,
     output logic [12:0] dbg_dm_addr_68k,
     output logic [15:0] dbg_dm_wdata_68k,
+    output logic        dbg_sim_rd, dbg_sim_fetching,
+    output logic [17:0] dbg_sim_idx,
+    output logic [15:0] dbg_sim_word,
+    output logic        dbg_adsp_bank,
+    output logic [12:0] dbg_som_ptr,
+    output logic [15:0] dbg_io_wdata,
+    output logic        dbg_somclk, dbg_gint_wr, dbg_xout_wr,
+    output logic        dbg_br_n, dbg_halt_n, dbg_adsp_reset_o, dbg_pm_we_68k,
+    output logic [12:0] dbg_pm_addr_68k,
+    output logic [23:0] dbg_pm_wdata_68k,
     output logic [15:0] dbg_gsp_intpend, dbg_gsp_intenb, dbg_gsp_control,
     output logic [31:0] dbg_gsp_fraddr, dbg_gsp_frval, dbg_gsp_intvec,
     output logic [15:0] dbg_gsp_dpyint, dbg_gsp_vc, dbg_gsp_dpyctl,
@@ -89,10 +101,26 @@ module tb_system_top (
     assign dbg_gsp_instr = core.gsp.dbg_instr;
     assign dbg_som_wr = core.io_wr && (core.io_addr[2:0] == 3'd2);
     assign dbg_adsp_wait = core.io_wait;
+    assign dbg_c_ack = {core.c_ack[5], core.c_ack[4], core.c_ack[3], core.c_ack[2], core.c_ack[1], core.c_ack[0]};
+    assign dbg_b_active = core.sdram.b_active;
     assign dbg_dm_we_68k    = core.main.dm_we;
     assign dbg_dm_addr_68k  = core.main.dm_addr;
     assign dbg_dm_wdata_68k = core.main.dm_wdata;
     assign dbg_adsp_instr = core.adsp.dbg_instr_done;
+    assign dbg_sim_rd   = core.sim_consume;
+    assign dbg_sim_fetching = core.sim_fetching;
+    assign dbg_sim_idx  = core.sim_idx;
+    assign dbg_sim_word = core.sim_word;
+    assign dbg_adsp_bank = core.adsp_bank;
+    assign dbg_som_ptr   = core.som_ptr;
+    assign dbg_io_wdata  = core.io_wdata;
+    assign dbg_somclk    = core.io_wr && (core.io_addr[2:0] == 3'd3);
+    assign dbg_gint_wr   = core.io_wr && (core.io_addr[2:0] == 3'd6);
+    assign dbg_xout_wr   = core.io_wr && (core.io_addr[2:0] == 3'd5);
+    assign dbg_br_n      = core.main.br_n_lat;
+    assign dbg_halt_n    = core.main.halt_n_lat;
+    assign dbg_adsp_reset_o = core.adsp_reset;
+    assign dbg_pm_we_68k = core.main.pm_we; assign dbg_pm_addr_68k = core.main.pm_addr; assign dbg_pm_wdata_68k = core.main.pm_wdata;
     assign dbg_gsp_intpend = core.gsp.io[18];
     assign dbg_gsp_fraddr  = core.gsp.fr_addr;
     assign dbg_gsp_frval   = core.gsp.fr_val;
