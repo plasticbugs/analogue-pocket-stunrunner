@@ -133,6 +133,17 @@ attempts did nothing.)
 
 Power-up state: halt=1, br=0 (ADSP halted until the 68k releases it).
 
+### 2.3b Yoke ADC polarity (b00000, ADC0809 channels 0 and 2)
+
+Channel 0 = steering (X), channel 2 = yoke pitch (Y), 0x80 centre. Verified in
+MAME on the level-select screen ("RAISE CONTROL TO SELECT LEVEL"): forcing
+channel 2 to **0xf0 raises the control** (Novice -> Advanced); 0x10 does
+nothing. MAME's `IPT_AD_STICK_Y` maps its *down* key to the high value, so on
+the Pocket D-pad **up** must produce 0xf0 (`target/pocket/core_top.sv`); the
+first build had it the other way round, which is why the D-pad appeared dead
+on that screen. A dock controller's left stick is passed through unchanged
+when it is off centre (deadzone 0x70-0x90).
+
 ### 2.4 ADC control (b80000, write)
 
 Bits 2:0 = ADC0809 channel, bit 3 = start conversion (the 0809 START/ALE

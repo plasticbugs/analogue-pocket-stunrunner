@@ -462,6 +462,37 @@ int main(int argc, char **argv) {
             }
             if (frame == 707 && f) { fclose(f); f = nullptr; printf("ADSP io stream written to artifacts/rtl_adsp_io.txt\n"); fflush(stdout); }
         }
+        // TB_ROWLOG: is the display row pointer sane? Per visible line log
+        // DPYADR on line_start; it must step by -DUDATE (or count its low two
+        // bits down) monotonically from VSBLNK to the next VSBLNK. A jump back
+        // toward DPYSTRT mid-frame means the row pointer restarted -- which is
+        // what "the lower half shows the top half again" looks like. Also
+        // counts late line fetches per frame (a fetch still running when the
+        // next line started), the other candidate for the flicker.
+        if (getenv("TB_ROWLOG")) {
+            static int lastf = -1; static long late = 0, lines = 0, jumps = 0;
+            static uint16_t prev_dpyadr = 0; static bool have_prev = false;
+            static int shown = 0;
+            if (top->dbg_line_late) late++;
+            if (top->dbg_line_start) {
+                uint16_t d = top->dbg_dpyadr; int vc = top->dbg_vcount;
+                bool visible = (vc >= (int)top->dbg_veblnk) && (vc < (int)top->dbg_vsblnk);
+                if (visible && have_prev) {
+                    lines++;
+                    // a visible-line step must not INCREASE the row part (rows count down through the frame)
+                    if ((d & 0xfffc) > (prev_dpyadr & 0xfffc)) {
+                        jumps++;
+                        if (shown < 30) { shown++; printf("frame %3d vc %3d: DPYADR jumped %04x -> %04x (DPYSTRT %04x)\n", frame, vc, prev_dpyadr, d, top->dbg_dpystrt); fflush(stdout); }
+                    }
+                }
+                prev_dpyadr = d; have_prev = visible;
+            }
+            if (frame != lastf) {
+                if (lastf >= 0 && (late || jumps) && lastf >= 300)
+                    printf("frame %3d: late_lines=%ld  row_jumps=%ld  (visible lines %ld)\n", lastf, late, jumps, lines);
+                late = jumps = lines = 0; lastf = frame;
+            }
+        }
         // TB_MEMDUMP: dump the ADSP program and data RAM at frame TB_MEMDUMP so it
         // can be diffed against MAME's at the same frame. The ADSP bench loads PM
         // from MAME's dump, so nothing has ever checked the copy our own 68k
@@ -775,7 +806,8 @@ int main(int argc, char **argv) {
             if (top->vsync && !prev_vs) {
                 // frame done
                 if (snap_every > 0 && frame % snap_every == 0) {
-                    char name[256]; snprintf(name, sizeof name, "../artifacts/sim/frame%05d.png", frame);
+                    static const char *sd = getenv("TB_SNAPDIR") ? getenv("TB_SNAPDIR") : "../artifacts/sim";
+                    char name[256]; snprintf(name, sizeof name, "%s/frame%05d.png", sd, frame);
                     write_png(name, fb, 512, 240);
                 }
                 frame++; y = -1;
@@ -794,6 +826,15 @@ int main(int argc, char **argv) {
                     printf("dumped palette and VRAM at frame %d\n", frame);
                 }
                 if (coin_frame >= 0) { top->coin1 = (frame >= coin_frame && frame < coin_frame + 6); }
+                // TB_STICKX / TB_STICKY = value (decimal), TB_STICK_FRAME = from which frame:
+                // drive the yoke ADC inputs, to test the whole ADC path in-system.
+                {
+                    static int sf = getenv("TB_STICK_FRAME") ? atoi(getenv("TB_STICK_FRAME")) : -1;
+                    if (sf >= 0 && frame >= sf) {
+                        if (getenv("TB_STICKX")) top->stick_x = atoi(getenv("TB_STICKX")) & 0xff;
+                        if (getenv("TB_STICKY")) top->stick_y = atoi(getenv("TB_STICKY")) & 0xff;
+                    }
+                }
                 if (start_frame >= 0) { top->start = (frame >= start_frame && frame < start_frame + 6); }
                 printf("frame %d cyc %llu 68k %08x gsp %08x adsp %04x flags %02x\n", frame, (unsigned long long)cyc,
                        top->dbg_68k_pc, top->dbg_gsp_pc, top->dbg_adsp_pc, top->dbg_flags);

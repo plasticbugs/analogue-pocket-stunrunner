@@ -970,8 +970,12 @@ module core_top
     //! Controls. The cabinet has an analog stick (8-bit ADC, 0x80 centre) and
     //! two buttons. The D-pad gives full deflection; a dock controller's left
     //! stick is passed through when it is off centre.
+    //! Polarity, verified in MAME on the level-select screen ("RAISE CONTROL
+    //! TO SELECT LEVEL"): ADC channel 2 = 0xf0 raises the control (Novice ->
+    //! Advanced); 0x10 does nothing. MAME's own AD_STICK_Y maps its *down*
+    //! key to the high value, so D-pad UP must produce 0xf0 here.
     wire [7:0] stick_x_dp = m_left ? 8'h10 : m_right ? 8'hf0 : 8'h80;
-    wire [7:0] stick_y_dp = m_up   ? 8'h10 : m_down  ? 8'hf0 : 8'h80;
+    wire [7:0] stick_y_dp = m_up   ? 8'hf0 : m_down  ? 8'h10 : 8'h80;
     wire       j_active   = (j1_lx > 8'h90) || (j1_lx < 8'h70) || (j1_ly > 8'h90) || (j1_ly < 8'h70);
     wire [7:0] stick_x    = j_active ? j1_lx : stick_x_dp;
     wire [7:0] stick_y    = j_active ? j1_ly : stick_y_dp;
