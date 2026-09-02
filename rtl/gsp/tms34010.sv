@@ -1315,7 +1315,10 @@ module tms34010 (
                     logic signed [16:0] wsx, wex;
                     wsx = $signed({B_WSTART[15], B_WSTART[15:0]});
                     wex = $signed({B_WEND[15], B_WEND[15:0]});
-                    sh_x <= 32'(wsx - bc_sx); sh_k <= {2'b0, blt_sbpp_l}; sh_mode <= SH_SHL;   // diff * srcbpp
+                    // sign-extend to 32 bits before subtracting: the same value the
+                    // 32'() context cast produced, stated so Verilator 5.020 (CI) does
+                    // not report the implicit expansion of the 17-bit operands
+                    sh_x <= $signed({{15{wsx[16]}}, wsx}) - $signed({{15{bc_sx[16]}}, bc_sx}); sh_k <= {2'b0, blt_sbpp_l}; sh_mode <= SH_SHL;   // diff * srcbpp
                     tb = (wsx > bc_sx);
                     if (tb) begin bc_sx <= wsx; st[SB_V] <= 1'b1; end
                     if (bc_ex > wex) begin bc_ex <= wex; st[SB_V] <= 1'b1; end
@@ -1332,7 +1335,7 @@ module tms34010 (
                     logic signed [16:0] wsy, wey;
                     wsy = $signed({B_WSTART[31], B_WSTART[31:16]});
                     wey = $signed({B_WEND[31], B_WEND[31:16]});
-                    sh_x <= 32'(wsy - bc_sy); sh_k <= sp_sh; sh_mode <= SH_SHL;                 // diff * convsp
+                    sh_x <= $signed({{15{wsy[16]}}, wsy}) - $signed({{15{bc_sy[16]}}, bc_sy}); sh_k <= sp_sh; sh_mode <= SH_SHL;                 // diff * convsp
                     tb = (wsy > bc_sy);
                     if (tb) begin bc_sy <= wsy; st[SB_V] <= 1'b1; end
                     if (bc_ey > wey) begin bc_ey <= wey; st[SB_V] <= 1'b1; end
