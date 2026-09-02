@@ -106,3 +106,4 @@ sim/obj_*/
 **/obj_dir/
 *.build.log
 sim/*.log
+**/.DS_Store
