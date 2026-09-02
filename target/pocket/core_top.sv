@@ -976,7 +976,14 @@ module core_top
     //! key to the high value, so D-pad UP must produce 0xf0 here.
     wire [7:0] stick_x_dp = m_left ? 8'h10 : m_right ? 8'hf0 : 8'h80;
     wire [7:0] stick_y_dp = m_up   ? 8'hf0 : m_down  ? 8'h10 : 8'h80;
-    wire       j_active   = (j1_lx > 8'h90) || (j1_lx < 8'h70) || (j1_ly > 8'h90) || (j1_ly < 8'h70);
+    //! Only a controller that actually has analog sticks (framework pad type
+    //! 3, the same gate analog2dpad.sv uses) may override the D-pad. The
+    //! Pocket's own controls report 0x00 on the axes, which read as "hard
+    //! left, yoke fully down" and pinned the steering with no type check.
+    //! j1_left/right/up/down are the framework's own "analog stick deflected"
+    //! outputs (analog2dpad.sv: 0x70/0x90 thresholds, and only for pad type
+    //! 3), so they are both the correct gate and free -- no comparators here.
+    wire       j_active   = j1_left | j1_right | j1_up | j1_down;
     wire [7:0] stick_x    = j_active ? j1_lx : stick_x_dp;
     wire [7:0] stick_y    = j_active ? j1_ly : stick_y_dp;
     //! platform joypad numbering: Y/X = m_btn1/4, B/A = m_btn2/3, L1/R1 = m_btn5/6
@@ -998,7 +1005,7 @@ module core_top
     wire  [7:0] dbg_flags;
     wire  [7:0] nv_rd_data_core;
 
-    stunrun_core sr (
+    stunrun_core #(.DBG_OVERLAY(0)) sr (
         .clk          ( clk_sys        ),
         .clk_sdram    ( clk_sdram      ),
         .hw_reset     ( sr_hw_reset    ),

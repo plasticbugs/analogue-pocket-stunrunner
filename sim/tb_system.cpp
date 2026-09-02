@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <vector>
 #include <map>
+#include <set>
 #include <algorithm>
 #include <string>
 #include <zlib.h>
@@ -531,6 +532,34 @@ int main(int argc, char **argv) {
             }
             if (frame == f0 + 8 && lastvc != -2) { lastvc = -2; fflush(stdout); }
         }
+        // TB_SNDLOG: the sound pipeline per 30 frames, the same line MAME's
+        // tools sndwatch.lua prints: 68k->6502 commands, 68k response reads,
+        // YM2151 register writes, OKI writes, and whether the 6502 is alive
+        // (distinct opcode-fetch addresses, min/max). A hang shows as YM writes
+        // collapsing with one PC; a stalled 68k driver as commands stopping
+        // while the YM keeps being written; a stuck command latch as cmd_full
+        // held high for the whole window.
+        if (getenv("TB_SNDLOG")) {
+            static long cmd = 0, resp = 0, ym = 0, oki = 0, fetches = 0, fullclk = 0, irqclk = 0;
+            static std::set<uint16_t> pcs; static uint16_t pcmin = 0xffff, pcmax = 0;
+            static int lastblk = -1;
+            if (top->dbg_snd_cmd_wr) cmd++;
+            if (top->dbg_snd_resp_rd) resp++;
+            if (top->dbg_ym_wr) ym++;
+            if (top->dbg_oki_wr) oki++;
+            if (top->dbg_snd_cmd_full) fullclk++;
+            if (top->dbg_snd_irq) irqclk++;
+            if (top->dbg_6502_sync) { fetches++; uint16_t a = top->dbg_6502_addr; if (pcs.size() < 4096) pcs.insert(a); if (a < pcmin) pcmin = a; if (a > pcmax) pcmax = a; }
+            int blk = frame / 30;
+            if (blk != lastblk) {
+                if (lastblk >= 0 && (lastblk + 1) * 30 >= 300)
+                    printf("frames %4d-%4d: cmd=%3ld resp=%3ld ym_writes=%5ld oki_writes=%3ld  6502: fetches=%7ld distinct_pc=%4zu range %04x-%04x  cmd_full %5.1f%% irq %5.1f%%\n",
+                           lastblk * 30, lastblk * 30 + 29, cmd, resp, ym, oki, fetches, pcs.size(), pcmin, pcmax,
+                           100.0 * fullclk / (30.0 * 1594636.0), 100.0 * irqclk / (30.0 * 1594636.0));
+                fflush(stdout);
+                cmd = resp = ym = oki = fetches = fullclk = irqclk = 0; pcs.clear(); pcmin = 0xffff; pcmax = 0; lastblk = blk;
+            }
+        }
         // TB_MEMDUMP: dump the ADSP program and data RAM at frame TB_MEMDUMP so it
         // can be diffed against MAME's at the same frame. The ADSP bench loads PM
         // from MAME's dump, so nothing has ever checked the copy our own 68k
@@ -875,6 +904,9 @@ int main(int argc, char **argv) {
                     }
                 }
                 if (start_frame >= 0) { top->start = (frame >= start_frame && frame < start_frame + 6); }
+                // TB_FIRE_FRAME: press Fire ("trigger") for 6 frames at that frame -- starts a level
+                { static int ff = getenv("TB_FIRE_FRAME") ? atoi(getenv("TB_FIRE_FRAME")) : -1;
+                  if (ff >= 0) top->fire = (frame >= ff && frame < ff + 6); }
                 printf("frame %d cyc %llu 68k %08x gsp %08x adsp %04x flags %02x\n", frame, (unsigned long long)cyc,
                        top->dbg_68k_pc, top->dbg_gsp_pc, top->dbg_adsp_pc, top->dbg_flags);
                 fflush(stdout);

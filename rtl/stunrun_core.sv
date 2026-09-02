@@ -12,7 +12,9 @@
 //------------------------------------------------------------------------------
 `default_nettype none
 
-module stunrun_core (
+module stunrun_core #(
+    parameter DBG_OVERLAY = 1    // on-panel PC/flags overlay (METHODOLOGY 4); 105 ALUTs, compiled out of the Pocket build
+) (
     input  logic        clk,            // 96 MHz
     input  logic        clk_sdram,      // 96 MHz phase-shifted, SDRAM pin clock
     input  logic        hw_reset,       // PLL not locked: everything, including the loader path
@@ -247,12 +249,16 @@ module stunrun_core (
         .dbg_line_late(line_late_p)
     );
     logic [7:0] v_r, v_g, v_b;
-    dbg_overlay ovl (
-        .clk(clk), .cen_pix(cen_pix), .enable(overlay), .de(de), .vsync(vsync),
-        .r_in(v_r), .g_in(v_g), .b_in(v_b),
-        .status({dbg_68k_pc, dbg_gsp_pc, dbg_flags, 10'd0, dbg_adsp_pc}),
-        .r_out(r), .g_out(g), .b_out(b)
-    );
+    generate if (DBG_OVERLAY) begin : g_ovl
+        dbg_overlay ovl (
+            .clk(clk), .cen_pix(cen_pix), .enable(overlay), .de(de), .vsync(vsync),
+            .r_in(v_r), .g_in(v_g), .b_in(v_b),
+            .status({dbg_68k_pc, dbg_gsp_pc, dbg_flags, 10'd0, dbg_adsp_pc}),
+            .r_out(r), .g_out(g), .b_out(b)
+        );
+    end else begin : g_noovl
+        assign r = v_r; assign g = v_g; assign b = v_b;
+    end endgenerate
     assign hblank = v_hblank;
     assign vblank = v_vblank;
 

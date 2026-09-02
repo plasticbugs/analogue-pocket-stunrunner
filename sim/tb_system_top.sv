@@ -48,6 +48,8 @@ module tb_system_top (
     output logic [15:0] dbg_dm_wdata_68k,
     output logic        dbg_sim_rd, dbg_sim_fetching,
     output logic [31:0] dbg_gsp_st,
+    output logic        dbg_ym_wr, dbg_oki_wr, dbg_6502_sync, dbg_snd_cmd_full, dbg_snd_irq,
+    output logic [15:0] dbg_6502_addr,
     output logic [17:0] dbg_sim_idx,
     output logic [15:0] dbg_sim_word,
     output logic        dbg_adsp_bank,
@@ -124,6 +126,12 @@ module tb_system_top (
     assign dbg_pm_we_68k = core.main.pm_we; assign dbg_pm_addr_68k = core.main.pm_addr; assign dbg_pm_wdata_68k = core.main.pm_wdata;
     assign dbg_gsp_intpend = core.gsp.io[18];
     assign dbg_gsp_st = core.gsp.st;
+    assign dbg_ym_wr = core.sound.dbg_ym_wr;
+    assign dbg_oki_wr = core.sound.dbg_io_wr && (core.sound.dbg_io_sel == 2'd0);
+    assign dbg_6502_sync = core.sound.dbg_sync;
+    assign dbg_6502_addr = core.sound.dbg_addr;
+    assign dbg_snd_cmd_full = core.sound.cmd_full;
+    assign dbg_snd_irq = core.sound.irq;
     assign dbg_gsp_fraddr  = core.gsp.fr_addr;
     assign dbg_gsp_frval   = core.gsp.fr_val;
     assign dbg_gsp_intvec  = core.gsp.int_vec;

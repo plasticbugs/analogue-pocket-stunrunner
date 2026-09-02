@@ -142,7 +142,10 @@ nothing. MAME's `IPT_AD_STICK_Y` maps its *down* key to the high value, so on
 the Pocket D-pad **up** must produce 0xf0 (`target/pocket/core_top.sv`); the
 first build had it the other way round, which is why the D-pad appeared dead
 on that screen. A dock controller's left stick is passed through unchanged
-when it is off centre (deadzone 0x70-0x90).
+when it is off centre (deadzone 0x70-0x90) **and the framework reports pad
+type 3 (a controller with analog sticks)**: the Pocket's own controls put
+0x00 on the axis bytes, which without the type gate read as hard left and
+yoke fully down and pinned both axes regardless of the D-pad.
 
 ### 2.4 ADC control (b80000, write)
 
@@ -437,6 +440,16 @@ to roughly 75 % of the controller; the GSP is the elastic client (a slower GSP
 lowers the game's frame rate but stays correct because the 68k waits on it).
 
 ---
+
+## 7b. Diagnostic overlay (compiled out of the Pocket build)
+
+`rtl/dbg_overlay.sv` (METHODOLOGY section 4: the bottom 12 lines show the
+68010 PC, GSP PC and flags/ADSP PC as bit squares) is instantiated behind
+`stunrun_core`'s `DBG_OVERLAY` parameter -- 1 in the benches, **0 in
+`target/pocket/core_top.sv`**. At 99 % device utilisation it costs 105 ALUTs
+(about 10 LABs), and the build that added a four-comparator steering gate
+missed the device by 2 LABs; the simulation probes now cover what the overlay
+was for. Set the parameter back to 1 for a diagnostic build.
 
 ## 8. ROM image layout (`stunrun.rom`, built by `tools/mra_build.py` from `stunrun.mra`)
 
