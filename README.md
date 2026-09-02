@@ -77,3 +77,44 @@ MAME with a fresh NVRAM directory) does.
 
 CI (`.github/workflows/compile.yml`) lints, compiles, checks timing closure
 and block-RAM fit, and publishes the SD-card package.
+
+## Credits
+
+The S.T.U.N. Runner-specific RTL and verification harness are original; the
+rest of the core is built on other people's work.
+
+**Platform & toolchain**
+
+* the **Analogue Pocket** openFPGA framework (APF) itself — Analogue
+  Enterprises Limited, `platform/pocket/bsp/pocket/apf_top.sv`,
+  `platform/pocket/peripherals/io_pad_controller.sv` and related files
+* **boogermann (Marcus Andrade)** / OpenGateware — the Pocket integration
+  framework the rest of `platform/pocket/` (pad, audio, save/hiscore, video
+  and memory glue) is built from, and the `raetro/quartus:pocket` Docker
+  image `build-local.sh` and CI compile with; the hiscore/NVRAM autosave
+  support carries earlier copyright from Alan Steremberg and Jim Gregory
+* **GHDL** — converts the vendored VHDL CPU cores to Verilog
+  (`tools/gen_vhdl_cores.sh`) so one source feeds both Quartus and Verilator
+* **Verilator** — every simulation bench in `sim/`
+
+**Vendored cores** (`modules/`, see `modules/VENDOR.md`)
+
+* **TG68K.C**, the 68000/68010 core, by Tobias Gubener — `modules/cpu-tg68k`
+* **T65**, the 6502 core from FPGAARCADE (Daniel Wallner, Mike Johnson,
+  Wolfgang Scherr and other contributors), by way of `plasticbugs/punchout`
+  — `modules/cpu-t65`
+* **JT51** (YM2151) and **JT6295** (OKI MSM6295), by Jose Tejada (jotego) —
+  `modules/sound-jt51`, `modules/sound-jt6295`
+* the SDRAM controller's pin-level timing — CL2, read data captured at
+  READ+4, proven on the Pocket at 96 MHz — is carried over from the
+  Punch-Out!! core's `sdram16.sv` (`rtl/sdram_ctrl.sv`)
+
+**Reference & verification**
+
+* **MAME** — the `harddriv` driver, and its TMS34010 and ADSP-2100 CPU
+  cores, are the behavioural reference the GSP and ADSP RTL (`rtl/gsp/`,
+  `rtl/adsp/`) were written from and verified against instruction by
+  instruction (`docs/gsp.md`, `docs/adsp.md`, `docs/verification.md`,
+  `METHODOLOGY.md`)
+* **Ghidra** — disassembled the 68010 boot program for
+  `docs/boot-sequence.md`
