@@ -758,6 +758,10 @@ module tms34010 (
     logic        int_push, force_pend;
     logic        host_pend, host_we;
     state_t      hw_ret;          // state to resume after an inserted host access
+    // a host access aimed at the GSP's own I/O registers (HSTADR in c0000000..)
+    // is NOT inserted mid-instruction: it takes the S_CHECK path, which goes
+    // through the word primitive's I/O branch, exactly as before
+    wire         host_is_io = ({io[R_HSTADRH][11:0], io[R_HSTADRL][15:5]} == 23'h600000);   // same test as w_is_io
     logic [15:0] host_data;
 
     // video counters
@@ -1012,7 +1016,7 @@ module tms34010 (
                     endcase
                     pc <= pc + 32'h10;
                     state <= S_FTDONE;
-                end else if (host_pend) begin
+                end else if (host_pend && !host_is_io) begin
                     // same insertion on an instruction-cache miss
                     host_pend <= 1'b0;
                     mem_addr  <= {io[R_HSTADRH], io[R_HSTADRL][15:4]};
@@ -1127,7 +1131,7 @@ module tms34010 (
                     if (w_we) io_write(w_addr[4:0], w_wdata, 1'b0);
                     mrd   <= io_read(w_addr[4:0]);
                     state <= w_ret;
-                end else if (host_pend && cen) begin
+                end else if (host_pend && !host_is_io && cen) begin
                     // Host-port data access inserted between the core's own
                     // memory cycles, as the TMS34010's host interface does.
                     // Serving it only at S_CHECK made a HSTDATA write wait out
