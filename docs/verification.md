@@ -76,6 +76,16 @@ is not here has not been verified.
   (`projects/worst0c.tcl`, `worst85c.tcl`) against the fitted netlist take
   three minutes; a relax-only SDC edit can be trusted on the existing fit, an
   RTL settle tick cannot and needs the recompile.
+- **A GSP bench window must not open inside a blit.** `tools/trace_gsp.lua`
+  windows that start while MAME is still "eating" a PIXBLT's cycles (P set,
+  continuation entries at the top of the trace) hit the bench's forced-
+  interrupt rule -- a blit followed by an interrupt vector is interrupted
+  *before* the blit, DADDR untouched -- which is wrong when MAME actually
+  finished the blit first (its post-RETI PC is the next instruction with P
+  clear). The captured w10 (MAME frames 1690-1800) fails at instruction 35 for
+  exactly this and is kept aside as `skip_w10`; a lookahead to the matching
+  RETI would let the bench choose before/after correctly. Pick a START frame
+  a few frames off if a window opens mid-blit.
 - **TG68K bus sampling.** The kernel's `addr_out` settles one clock after
   `busstate` changes on a step; sampling the bus on the cycle right after
   `clkena` fetched the previous address (the second ROM read returned word 0

@@ -35,7 +35,10 @@ module audio_filters
          // (pre_out = 0) -- so one chain is instantiated and mirrored. Provably
          // output-identical, and it returns ~157 ALUTs. Defaults to 0, so every
          // other core keeps the stereo behaviour unchanged.
-         parameter MONO     = 0
+         parameter MONO     = 0,
+         // 0 removes the optional IIR low-pass (669 ALUTs with its loader; the
+         // DC blocker and mixer stay). The core's YM2151/OKI mix does not need it.
+         parameter IIR      = 1
      ) (
          input  wire        clk,
          input  wire        reset,
@@ -134,6 +137,7 @@ module audio_filters
     end
 
     wire [15:0] acl, acr;
+    generate if (IIR) begin : g_iir
     iir_filter #(.use_params(0)) iir_filter
                (
                    .clk       ( clk            ),
@@ -155,6 +159,12 @@ module audio_filters
                    .output_l  ( acl ),
                    .output_r  ( acr )
                );
+
+    end else begin : g_noiir
+        // straight through, in the sign convention the filter would have used
+        assign acl = {~is_signed ^ cl[15], cl[14:0]};
+        assign acr = {~is_signed ^ cr[15], cr[14:0]};
+    end endgenerate
 
     wire [15:0] adl;
     dc_blocker dcb_l

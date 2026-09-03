@@ -451,6 +451,19 @@ lowers the game's frame rate but stays correct because the 68k waits on it).
 missed the device by 2 LABs; the simulation probes now cover what the overlay
 was for. Set the parameter back to 1 for a diagnostic build.
 
+## 7c. D-pad ramp and the audio IIR (Pocket build)
+
+`target/pocket/dpad_ramp.sv`: each yoke axis integrates toward the extreme
+while a D-pad direction is held (full lock in ~0.7 s at a shared 183 Hz tick)
+and returns to centre in ~0.25 s when released, so a tap is a small
+deflection -- the same digital-to-analog ramp other Pocket/MiSTer cores use
+for analog steering. A dock controller's stick still bypasses it.
+
+The framework's optional IIR low-pass in the audio path (`audio_filters.sv`,
+669 ALUTs including its loader) is compiled out with `audio_mixer`'s
+`IIR = 0`; the DC blocker and mixer remain. It was the largest removable block
+when the ramp build missed the device by 9 LABs.
+
 ## 8. ROM image layout (`stunrun.rom`, built by `tools/mra_build.py` from `stunrun.mra`)
 
 | offset | size | content | byte order |

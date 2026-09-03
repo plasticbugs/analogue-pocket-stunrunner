@@ -742,7 +742,7 @@ module core_top
     //! ------------------------------------------------------------------------
     wire [AUDIO_DW-1:0] core_snd_l, core_snd_r; // Audio Mono/Left/Right
 
-    audio_mixer #(.DW(AUDIO_DW),.STEREO(STEREO)) pocket_audio_mixer
+    audio_mixer #(.DW(AUDIO_DW),.STEREO(STEREO),.IIR(0)) pocket_audio_mixer   // IIR low-pass compiled out: 669 ALUTs, see docs/hardware.md 7b
     (
         // Clocks and Reset
         .clk_74b    ( clk_74b    ),
@@ -974,8 +974,14 @@ module core_top
     //! TO SELECT LEVEL"): ADC channel 2 = 0xf0 raises the control (Novice ->
     //! Advanced); 0x10 does nothing. MAME's own AD_STICK_Y maps its *down*
     //! key to the high value, so D-pad UP must produce 0xf0 here.
-    wire [7:0] stick_x_dp = m_left ? 8'h10 : m_right ? 8'hf0 : 8'h80;
-    wire [7:0] stick_y_dp = m_up   ? 8'hf0 : m_down  ? 8'h10 : 8'h80;
+    //! D-pad -> ramped axis (dpad_ramp.sv): hold ~0.7 s for full lock, a tap
+    //! is a small deflection, release returns to centre in ~0.25 s.
+    wire [7:0] stick_x_dp, stick_y_dp;
+    reg [18:0] ramp_div = '0;                       // one 183 Hz tick shared by both axes
+    always @(posedge clk_sys) ramp_div <= ramp_div + 1'b1;
+    wire ramp_tick = (ramp_div == '0);
+    dpad_ramp ramp_x (.clk(clk_sys), .reset(sr_reset), .tick(ramp_tick), .neg(m_left), .pos(m_right), .value(stick_x_dp));
+    dpad_ramp ramp_y (.clk(clk_sys), .reset(sr_reset), .tick(ramp_tick), .neg(m_down), .pos(m_up),    .value(stick_y_dp));
     //! Only a controller that actually has analog sticks (framework pad type
     //! 3, the same gate analog2dpad.sv uses) may override the D-pad. The
     //! Pocket's own controls report 0x00 on the axes, which read as "hard

@@ -33,7 +33,8 @@
 module audio_mixer
     #(
          parameter DW     = 16,
-         parameter STEREO =  1
+         parameter STEREO =  1,
+         parameter IIR    =  1
      ) (
          // Clocks and Reset
          input  logic          clk_74b,    //! Clock 74.25Mhz
@@ -116,7 +117,7 @@ module audio_mixer
 
     // STEREO=0 means core_ar is tied to core_al above, so the filter's two
     // channels are bit-identical -- build one and mirror it.
-    audio_filters #(.MONO(STEREO == 0)) audio_filters
+    audio_filters #(.MONO(STEREO == 0), .IIR(IIR)) audio_filters
                   (
                       .clk       ( audio_mclk ),
                       .reset     ( reset      ),

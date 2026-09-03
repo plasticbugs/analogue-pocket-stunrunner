@@ -560,6 +560,18 @@ int main(int argc, char **argv) {
                 cmd = resp = ym = oki = fetches = fullclk = irqclk = 0; pcs.clear(); pcmin = 0xffff; pcmax = 0; lastblk = blk;
             }
         }
+        // TB_SNDCMD: every 68k -> sound-board command byte with its frame, and
+        // every response the 68k reads, to artifacts/snd_cmds_rtl.txt -- the
+        // stream the JSA bench replays, so it can be diffed against MAME's for
+        // the same stimulus (tools/trace_sndcmd.lua) before blaming the board.
+        if (getenv("TB_SNDCMD")) {
+            static FILE *cf = nullptr;
+            if (!cf) cf = fopen("../artifacts/snd_cmds_rtl.txt", "w");
+            if (top->dbg_snd_cmd_wr) fprintf(cf, "C %4d %02x\n", frame, top->dbg_snd_cmd);
+            if (top->dbg_snd_resp_rd) fprintf(cf, "R %4d %02x\n", frame, top->dbg_snd_resp);
+            if (top->dbg_snd_reset) fprintf(cf, "X %4d\n", frame);
+            if (frame % 100 == 0) fflush(cf);
+        }
         // TB_MEMDUMP: dump the ADSP program and data RAM at frame TB_MEMDUMP so it
         // can be diffed against MAME's at the same frame. The ADSP bench loads PM
         // from MAME's dump, so nothing has ever checked the copy our own 68k

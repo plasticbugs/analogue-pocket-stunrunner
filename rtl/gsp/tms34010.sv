@@ -1600,7 +1600,12 @@ module tms34010 (
                         blt_srow <= blt_srow + B_SPTCH;
                         blt_drow <= blt_drow + B_DPTCH;
                     end
-                    if (int_ready && (!dbg_int_inhibit || dbg_int_pending)) begin
+                    // Real interrupt sources only: the bench's forced interrupts
+                    // (dbg_int_pending) model MAME, whose blits are atomic, so
+                    // those are honoured at the blit's issue point alone. In the
+                    // system dbg_int_inhibit and dbg_int_pending are tied off.
+                    if ((nmi_pend || (st[SB_IE] && ((io[R_INTPEND] & io[R_INTENB] & 16'h0e00) != 16'h0)))
+                        && !dbg_int_inhibit) begin
                         // take the interrupt between rows: write the progress into
                         // DADDR/SADDR/DYDX via the end-of-blit sequence, keep P
                         blt_int_wb <= 1'b1;
