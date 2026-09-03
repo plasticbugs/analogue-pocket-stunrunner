@@ -604,12 +604,18 @@ int main(int argc, char **argv) {
             static int f0 = atoi(getenv("TB_68KPROF")); static int lastf = -1;
             static uint64_t iters = 0, feedw = 0, hostw = 0, c_wait = 0, c_feed = 0, c_som = 0, c_cam = 0, c_irq = 0, c_fb = 0, c_fe = 0, c_oth = 0, c_hst = 0;
             static bool in_feed = false;
+            static uint64_t hw_tot = 0, hw_n = 0, hw_max = 0;
             uint32_t pc = top->dbg_68k_pc;
             bool feed = (pc >= 0x2274a && pc < 0x22954);
             if (feed && !in_feed) iters++;
             in_feed = feed;
             if (top->dbg_host_wr && top->dbg_host_addr == 2) { hostw++; if (feed) feedw++; }
             if (top->dbg_host_wr && !top->dbg_host_ready) c_hst++;
+            // 68k bus FSM parked in B_WAIT_GSP: clocks blocked on the host port,
+            // number of accesses, and the longest single wait this frame
+            { static uint64_t cur = 0; static uint64_t nacc = 0, maxw = 0, tot = 0;
+              if (top->dbg_68k_waitgsp) { cur++; tot++; } else if (cur) { nacc++; if (cur > maxw) maxw = cur; cur = 0; }
+              if (frame != lastf) { hw_tot = tot; hw_n = nacc; hw_max = maxw; tot = nacc = maxw = 0; } }
             if (feed) c_feed++;
             else if (pc >= 0x2c3b4 && pc < 0x2c3da) c_wait++;
             else if (pc >= 0x2f0ae && pc < 0x2f0f8) c_som++;
@@ -620,10 +626,10 @@ int main(int argc, char **argv) {
             else c_oth++;
             if (frame != lastf) {
                 if (lastf >= f0)
-                    printf("68kprof %4d: iters %4llu feedw %5llu hostw %5llu | kcyc wait %4llu feed %4llu som %4llu cam %3llu irq %3llu fb %3llu fe %3llu other %4llu hstall %4llu\n",
+                    printf("68kprof %4d: iters %4llu feedw %5llu hostw %5llu | kcyc wait %4llu feed %4llu som %4llu cam %3llu irq %3llu fb %3llu fe %3llu other %4llu hstall %4llu | hostwait kcyc %4llu n %5llu max %6llu\n",
                            lastf, (unsigned long long)iters, (unsigned long long)feedw, (unsigned long long)hostw,
                            (unsigned long long)(c_wait / 1000), (unsigned long long)(c_feed / 1000), (unsigned long long)(c_som / 1000), (unsigned long long)(c_cam / 1000),
-                           (unsigned long long)(c_irq / 1000), (unsigned long long)(c_fb / 1000), (unsigned long long)(c_fe / 1000), (unsigned long long)(c_oth / 1000), (unsigned long long)(c_hst / 1000));
+                           (unsigned long long)(c_irq / 1000), (unsigned long long)(c_fb / 1000), (unsigned long long)(c_fe / 1000), (unsigned long long)(c_oth / 1000), (unsigned long long)(c_hst / 1000), (unsigned long long)(hw_tot / 1000), (unsigned long long)hw_n, (unsigned long long)hw_max);
                 iters = feedw = hostw = c_wait = c_feed = c_som = c_cam = c_irq = c_fb = c_fe = c_oth = c_hst = 0;
                 lastf = frame;
             }

@@ -14,7 +14,7 @@ is not here has not been verified.
 | TMS34010 core (`rtl/gsp/`) | `sim/run_gsp.sh` | MAME GSP instruction trace (PC, ST, SP, A0–A14, B0–B14 per instruction) + end-of-window VRAM | PASS on 3 windows: boot/download (1,860,171 instr), 3D attract (88,534), title screens (3,917,724); 0 divergences over 5.87 M instructions; final VRAM word-identical; 60 mnemonics / 121 operand forms covered — `docs/gsp.md` |
 | ADSP-2100 core (`rtl/adsp/`) | `sim/run_adsp.sh` | MAME ADSP instruction trace + every data-space access + 68k RAM writes replayed | PASS on 4 windows: 5,274,473 / 22,196,327 / 961,476 / 256,948 instructions (w4 = the 3D demo's first two frames from the trigger), 0 mismatches, final memories identical; also PASS with random `io_wait` stalls (`IOWAIT=N`, asserted from the `io_rd` clock) and random `halt` injection (`HALT=N`) — `docs/adsp.md` |
 | Whole machine | `sim/run_system.sh` | MAME boot timeline (per-frame CPU PCs), MAME's title-screen frame, MAME's 68k/ADSP protocol trace (`tools/trace_som.lua`) | boots from the ROM download and reaches the title screen **pixel-identical to MAME (0 differing pixels, dy=0)** when captured on DE; palette word-identical (1024/1024); sound board answers the reset and receives the title-music command; **enters and runs the 3D attract demo** with the 68k/ADSP handshake matching MAME's per-frame counts (see below). Every SIM ROM word the ADSP receives is checked against the image (hard gate) |
-| Synthesis (Quartus 18.1, 5CEBA4) | `./build-local.sh` | — | **fits, compiles and closes timing** (build with the between-row blit interrupt, the S_FW1 settle tick and the D-pad fix): Fitter 0 errors; 18,253 / 18,480 ALMs (99 %), 15,604 registers, block RAM 51 %. **Zero negative slack** at every corner on the 96 MHz core clock, with the `astat -> shifter`, `imm -> *` and `fw_k -> field write` multicycles (each argued in the SDC): setup +0.170 ns (slow 85 °C), +0.381 (slow 0 °C), +3.35 / +3.54 (fast); hold +0.292 / +0.284 (slow), +0.067 / +0.000 (fast 85 / 0 °C — met, and the thinnest number in the design). Which slow corner is worst for setup flips between builds — always read both. |
+| Synthesis (Quartus 18.1, 5CEBA4) | `./build-local.sh` | — | **fits, compiles and closes timing** (build with the sound-command guard and the GSP host-access insertion, 2026-09-03): Fitter 0 errors; 18,314 / 18,480 ALMs (99 %), 15,020 registers, block RAM 51 %. **Zero negative slack** at every corner on the 96 MHz core clock with the SDC's argued multicycles: setup +0.165 ns (slow 85 °C), +0.395 (slow 0 °C), +3.31 / +3.52 (fast); hold +0.288 / +0.230 (slow), +0.122 / +0.069 (fast 85 / 0 °C — met, and the thinnest number in the design). Which slow corner is worst for setup flips between builds — always read both. |
 | Hardware (Pocket) | — | — | not yet built |
 
 ## Lessons recorded on the way
@@ -361,3 +361,53 @@ Lessons: an edge-triggered interrupt behind a level flag has a dead spot one
 sample wide right after the consumer clears it -- look for it whenever a
 faster-than-real producer feeds a real-timed consumer; and "hold until empty"
 is the worst possible pacing for such a latch.
+
+## The attract band (starfield never finished painting)
+
+Symptom on hardware and in `sim/run_system.sh` (attract, no coin): 32-34 s after
+reset, during the open section of the demo, a band across the middle of the
+picture shows a palette-mangled version of the title screen. VRAM dumps
+(`TB_MEMDUMP`, `tools/render_model.py`) put it in VRAM: the demo's horizon band is
+two `PIXBLT L,XY` (96 x 512 each) from an off-screen region at GSP `ffe00000`
+(dump rows 512-800), and in ours the lower 168 rows of that region still held
+the title art while MAME's held a starfield. (An earlier suspect, a wrong DADDR
+X, was a bug in `TB_BLITLOG`'s opcode-name table -- fixed; the X offset itself
+differs because the two machines were at different points of the demo.)
+
+**How the starfield gets there.** The title screen is drawn through the same
+region, and the starfield replaces it as backdrop stream 0x17: `FUN_31c8a`
+(the per-loop track update) calls `FUN_2da6e(0x17)` when the demo car enters a
+track segment flagged 0x20000, which sets `ff9bcc`; `GspFeedDataStream(5)`
+(0x22766) then decompresses the stream into VRAM through HSTDATA, five tokens
+per call, from the 68k's wait loops (`FrameUpdate`'s ADSP wait, `GspWaitIrq3`).
+MAME (`tools/trace_backdrop.lua`, `tools/trace_feed.lua`, `tools/trace_demo.lua`):
+request at frame 1514, the whole stream painted by 1611, ~3.4 rows per frame,
+long before the horizon opens at ~1794.
+
+**What ours did.** `TB_DEMOSTATE` (68k RAM peeked per frame): the request comes
+at frame 1813 -- the same track position (7th lap of the 12-node track ring,
+node `bdf2`), 299 frames later than MAME because the demo starts 151 frames
+later and each main-loop iteration takes 2.41 video frames against MAME's 2.22
+(iterations per ring lap are within a few percent: 479 vs 453 over eight laps).
+Then the feed crawls: the stream pointer advances ~46 source bytes per frame
+where MAME finishes the stream in 97 frames. `TB_68KPROF` shows the 68k spinning
+thousands of wait-loop iterations per frame (it is not short of spare time) and
+95 % of every frame in "other", with 3-4k HSTDATA writes per iteration.
+
+**Cause.** `rtl/gsp/tms34010.sv` served a host-port data access (`host_pend`)
+only at the instruction boundary (`S_CHECK`). During a PIXBLT or FILL -- most of
+every demo frame -- a 68k write to HSTDATA therefore waited for the whole blit.
+The TMS34010's host interface arbitrates per memory cycle, so on the real board
+(and in MAME, where host writes are instant) a host access costs a fraction of
+a microsecond mid-blit. Every 68k -> GSP transfer paid for this: the display-list
+copy (`SomCopyToGsp`, 3-6k words per loop), the backdrop feed, and the title
+screens' host traffic, which is where the 147-frame attract lag comes from.
+
+**Fix.** A pending host access is inserted between the core's own memory
+cycles: in the shared word primitive `S_W0` (every instruction's memory traffic,
+blit rows included, goes through it) and on an instruction-cache miss, with a
+new completion state `S_HW1` that hands the word back, post-increments HSTADR
+as `S_HOST1` does and resumes the interrupted core access; the `S_CHECK` path
+stays for the halted/idle case. GSP trace bench: all six windows PASS with
+VRAM identical (1,860,171 / 88,534 / 3,917,724 / 116,034 / 809 / 725,630
+instructions). System result: see below.

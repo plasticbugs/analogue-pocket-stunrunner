@@ -30,7 +30,7 @@ module tb_system_top (
     output logic  [9:0] dbg_pal_waddr,
     output logic [15:0] dbg_pal_wdata,
     output logic  [1:0] dbg_palbank,
-    output logic        dbg_snd_cmd_wr, dbg_snd_resp_rd, dbg_snd_reset, dbg_gsp_int, dbg_host_wr, dbg_host_ready, dbg_snd_block,
+    output logic        dbg_snd_cmd_wr, dbg_snd_resp_rd, dbg_snd_reset, dbg_gsp_int, dbg_host_wr, dbg_host_ready, dbg_snd_block, dbg_68k_waitgsp,
     output logic  [7:0] dbg_snd_cmd, dbg_snd_resp,
     output logic  [1:0] dbg_host_addr,
     output logic [15:0] dbg_host_wdata,
@@ -98,7 +98,7 @@ module tb_system_top (
     );
     assign model_errors = chip.errors;
     assign dbg_pal_we_rg = core.pal_we_rg; assign dbg_pal_we_b = core.pal_we_b; assign dbg_pal_waddr = core.pal_waddr; assign dbg_pal_wdata = core.pal_wdata; assign dbg_palbank = core.palbank;
-    assign dbg_snd_cmd_wr = core.snd_cmd_wr; assign dbg_snd_resp_rd = core.snd_resp_rd; assign dbg_snd_reset = core.snd_reset; assign dbg_gsp_int = core.gsp_int; assign dbg_host_wr = core.host_wr; assign dbg_host_ready = core.host_ready; assign dbg_snd_block = core.main.snd_block;
+    assign dbg_snd_cmd_wr = core.snd_cmd_wr; assign dbg_snd_resp_rd = core.snd_resp_rd; assign dbg_snd_reset = core.snd_reset; assign dbg_gsp_int = core.gsp_int; assign dbg_host_wr = core.host_wr; assign dbg_host_ready = core.host_ready; assign dbg_snd_block = core.main.snd_block; assign dbg_68k_waitgsp = (core.main.bst == core.main.B_WAIT_GSP);
     assign dbg_snd_cmd = core.snd_cmd; assign dbg_snd_resp = core.snd_resp; assign dbg_host_addr = core.host_addr; assign dbg_host_wdata = core.host_wdata;
     assign dbg_gmem_req = core.gmem_req; assign dbg_gmem_we = core.gmem_we; assign dbg_gmem_ack = core.gmem_ack; assign dbg_gmem_addr = core.gmem_addr; assign dbg_gmem_wdata = core.gmem_wdata;
     assign dbg_gio_we = core.gsp.w_we && core.gsp.w_is_io; assign dbg_gio_addr = core.gsp.w_addr[4:0]; assign dbg_gio_wdata = core.gsp.w_wdata;

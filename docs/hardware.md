@@ -201,6 +201,13 @@ GSP), 7 = INTOUT (GSP sets, host clears; drives 68k IRQ3).
 The GSP starts **halted** (`set_halt_on_reset(true)`): the 68k loads the GSP
 program into VRAM through HSTDATA, then clears HLT.
 
+Host data accesses are inserted between the GSP's own memory cycles (the
+TMS34010's host interface arbitrates per memory cycle, not per instruction):
+`rtl/gsp/tms34010.sv` serves `host_pend` in `S_W0` and on a cache miss, plus at
+`S_CHECK`. Before that, a HSTDATA write during a PIXBLT/FILL waited for the whole
+blit; `SomCopyToGsp` (3-6k words per game loop) and `GspFeedDataStream` (the
+starfield backdrop paint) crawled -- see docs/verification.md.
+
 ### 4.2 GSP address space (`multisync_gsp_map`; addresses are in **bits**)
 
 ```

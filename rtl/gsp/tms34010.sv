@@ -465,7 +465,7 @@ module tms34010 (
     // FSM states
     // ------------------------------------------------------------------
     typedef enum logic [7:0] {
-        S_RESET, S_CHECK, S_RESETVEC, S_HOST1,
+        S_RESET, S_CHECK, S_RESETVEC, S_HOST1, S_HW1,
         S_INT0, S_INT1, S_INT2, S_INT3,
         S_FT0, S_FT0B, S_FT1, S_FT2, S_FTDONE,
         S_DECODE, S_EXEC,
@@ -757,6 +757,7 @@ module tms34010 (
     logic [31:0] int_vec;
     logic        int_push, force_pend;
     logic        host_pend, host_we;
+    state_t      hw_ret;          // state to resume after an inserted host access
     logic [15:0] host_data;
 
     // video counters
@@ -948,6 +949,20 @@ module tms34010 (
                     {io[R_HSTADRH], io[R_HSTADRL]} <= {io[R_HSTADRH], io[R_HSTADRL]} + 32'h10;
                 state <= S_CHECK;
             end
+            S_HW1: begin
+                // inserted host access completes: hand the word back, autoincrement
+                // HSTADR exactly as S_HOST1 does, resume the interrupted core access
+                if (mem_ack) begin
+                    mem_req <= 1'b0;
+                    mem_we  <= 1'b0;
+                    mem_srt <= 1'b0;
+                    host_rdata <= mem_rdata;
+                    host_ready <= 1'b1;
+                    if ((host_we && io[R_HSTCTLH][11]) || (!host_we && io[R_HSTCTLH][12]))
+                        {io[R_HSTADRH], io[R_HSTADRL]} <= {io[R_HSTADRH], io[R_HSTADRL]} + 32'h10;
+                    state <= hw_ret;
+                end
+            end
 
             // interrupt / trap entry: push pc, push st, st = 0x10, pc = [vec]
             S_INT0: begin
@@ -997,6 +1012,17 @@ module tms34010 (
                     endcase
                     pc <= pc + 32'h10;
                     state <= S_FTDONE;
+                end else if (host_pend) begin
+                    // same insertion on an instruction-cache miss
+                    host_pend <= 1'b0;
+                    mem_addr  <= {io[R_HSTADRH], io[R_HSTADRL][15:4]};
+                    mem_we    <= host_we;
+                    mem_wdata <= host_data;
+                    mem_srt   <= 1'b0;
+                    mem_req   <= 1'b1;
+                    if (host_we) begin ic_inv <= 1'b1; ic_inv_addr <= {io[R_HSTADRH], io[R_HSTADRL][15:4]}; end
+                    hw_ret <= S_FT1;
+                    state  <= S_HW1;
                 end else begin
                     mem_addr <= pc[31:4];
                     mem_we   <= 1'b0;
@@ -1101,6 +1127,23 @@ module tms34010 (
                     if (w_we) io_write(w_addr[4:0], w_wdata, 1'b0);
                     mrd   <= io_read(w_addr[4:0]);
                     state <= w_ret;
+                end else if (host_pend && cen) begin
+                    // Host-port data access inserted between the core's own
+                    // memory cycles, as the TMS34010's host interface does.
+                    // Serving it only at S_CHECK made a HSTDATA write wait out
+                    // a whole PIXBLT/FILL, which starved SomCopyToGsp and the
+                    // GspFeedDataStream backdrop paint in the demo (see
+                    // docs/verification.md). The core's request (w_*) is left
+                    // untouched and re-issued when S_HW1 returns here.
+                    host_pend <= 1'b0;
+                    mem_addr  <= {io[R_HSTADRH], io[R_HSTADRL][15:4]};
+                    mem_we    <= host_we;
+                    mem_wdata <= host_data;
+                    mem_srt   <= 1'b0;
+                    mem_req   <= 1'b1;
+                    if (host_we) begin ic_inv <= 1'b1; ic_inv_addr <= {io[R_HSTADRH], io[R_HSTADRL][15:4]}; end
+                    hw_ret <= S_W0;
+                    state  <= S_HW1;
                 end else if (cen) begin
                     mem_addr  <= w_addr;
                     mem_we    <= w_we;

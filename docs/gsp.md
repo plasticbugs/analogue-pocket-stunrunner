@@ -29,6 +29,14 @@ instruction-by-instruction against MAME traces (see §3).
   DPYINT), WV, ILLOP vector, TRAP vectors. Priority and stacking as MAME.
 - Host interface: HSTADRL/H, HSTDATA with INCR/INCW post-increment,
   HSTCTL with the host/GSP write-permission rules, HLT, INTOUT → `int_out`.
+  A HSTDATA access is served between the core's own memory cycles -- inside
+  the shared word primitive (`S_W0`, which every instruction's memory traffic
+  including PIXBLT/FILL rows goes through) and on an instruction-cache miss --
+  as well as at the instruction boundary (`S_CHECK`), so the 68k waits for at
+  most one memory cycle even mid-blit, as on the real chip. Serving it only at
+  `S_CHECK` (the original design) made every host write wait out a whole blit;
+  in the attract demo that starved the 68k's display-list copy and the
+  backdrop paint (docs/verification.md, "the attract band").
 - Internal I/O registers, including the raster counters (HCOUNT/VCOUNT from
   `cen_vid`), the per-line DPYADR step/load and the DPYINT display interrupt.
 - 1 KB direct-mapped instruction cache on the fetch path; invalidated per line
