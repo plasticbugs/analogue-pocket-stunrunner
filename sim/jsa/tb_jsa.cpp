@@ -52,6 +52,7 @@ int main(int argc, char** argv) {
           if (k == "CMD" || k == "SRESET") ev.push_back({t, k, k == "CMD" ? (int)strtol(v.c_str(), nullptr, 16) : 0});
       } }
     fprintf(stderr, "events: %zu (CMD+SRESET)\n", ev.size());
+    fprintf(stderr, "68k stall model: %s\n", getenv("JSA_STALL") ? "on" : "off");
 
     Vtb_jsa_top* top = new Vtb_jsa_top;
     auto tick = [&]() { top->clk = 0; top->eval(); top->clk = 1; top->eval(); };
@@ -79,7 +80,15 @@ int main(int argc, char** argv) {
         top->cmd_wr = 0; top->snd_reset = 0; top->resp_rd = 0;
         if (cmd_hold > 0) cmd_hold--;
         while (ei < ev.size() && ev[ei].t <= t) {
-            if (ev[ei].kind == "CMD") { top->cmd_wr = 1; top->cmd_data = ev[ei].val; n_cmd++; }
+            // 68k model of stunrun_main's snd_block: a command whose time has
+            // come waits while jsa2 holds cmd_pending, up to 85 us; one write
+            // per clock, and the next command sees the latch full again.
+            static double stall_from = -1;
+            if (ev[ei].kind == "CMD" && top->dbg_cmd_pending && getenv("JSA_STALL")) {
+                if (stall_from < 0) stall_from = t;
+                if (t - stall_from < 85e-6) break;      // hold the write, retry next clock
+            }
+            if (ev[ei].kind == "CMD") { top->cmd_wr = 1; top->cmd_data = ev[ei].val; n_cmd++; stall_from = -1; ei++; break; }
             else { top->snd_reset = 1; }
             ei++;
         }
@@ -88,6 +97,25 @@ int main(int argc, char** argv) {
         if (resp_wait > 0) { if (--resp_wait == 0) { top->resp_rd = 1; n_resp++; } }
         tick();
         if (top->dbg_ym_wr) { fprintf(fe, "%.7f 0 YM%d %02x\n", t, top->dbg_ym_a0, top->dbg_ym_d); n_ym++; }
+        // JSA_LOGFROM=<s>: for 0.3 s from that time, log the command-latch
+        // protocol at clock resolution -- 68k writes, latch-full edges (the
+        // 6502's NMI input), NMI handler entries (PC 57e3), the handler's latch
+        // read, and its RTI (584e) -- so a lost command can be seen as the
+        // write that landed between a read and the handler's exit.
+        {
+            static double logfrom = getenv("JSA_LOGFROM") ? atof(getenv("JSA_LOGFROM")) : -1.0;
+            static int pfull = 0; static unsigned long long n_rd = 0, n_nmi = 0, n_edge = 0;
+            bool win = logfrom >= 0 && t >= logfrom && t < logfrom + 0.3;
+            if (top->cmd_wr && win) fprintf(fe, "%.7f 0 CMDW %02x\n", t, top->cmd_data);
+            if (top->dbg_cmd_full && !pfull) { n_edge++; if (win) fprintf(fe, "%.7f 0 NMIEDGE\n", t); }
+            pfull = top->dbg_cmd_full;
+            if (top->dbg_rd_cmd) { n_rd++; if (win) fprintf(fe, "%.7f 0 LATCHRD\n", t); }
+            { static int ppend = 0; if (win && top->dbg_cmd_pending != ppend) fprintf(fe, "%.7f 0 PEND%d\n", t, top->dbg_cmd_pending); ppend = top->dbg_cmd_pending; }
+            if (top->dbg_sync && top->dbg_addr == 0x57e3) { n_nmi++; if (win) fprintf(fe, "%.7f 0 NMI\n", t); }
+            if (top->dbg_sync && top->dbg_addr == 0x584e && win) fprintf(fe, "%.7f 0 RTI\n", t);
+            if (top->dbg_sync && top->dbg_addr == 0x584e) { static bool once = false; if (!once) { once = true; } }
+            if (t + 1.0 / clk_hz >= seconds) fprintf(stderr, "latch: edges %llu, reads %llu, nmi entries %llu\n", n_edge, n_rd, n_nmi);
+        }
         if (top->dbg_io_wr) { static const char* nm[4] = {"OKI", "WRP", "WRIO", "MIX"}; fprintf(fe, "%.7f 0 %s %02x\n", t, nm[top->dbg_io_sel], top->dbg_io_d); n_io++; }
         if (top->audio_valid) last_audio = (int16_t)top->audio;
         samp_acc += 1.0;

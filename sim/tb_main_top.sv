@@ -87,7 +87,7 @@ module tb_main_top (
         .som_addr(som_addr), .som_we(som_we), .som_be(som_be), .som_wdata(som_wdata), .som_rdata(som_rdata),
         .adsp_bank(adsp_bank), .adsp_halt(adsp_halt), .adsp_reset(adsp_reset),
         .adsp_int(1'b0), .adsp_int_clr(), .adsp_xflag(1'b0),
-        .snd_cmd_wr(snd_cmd_wr), .snd_cmd(snd_cmd), .snd_resp_rd(), .snd_resp(8'h00), .snd_int(1'b0), .snd_reset(snd_reset),
+        .snd_cmd_wr(snd_cmd_wr), .snd_cmd(snd_cmd), .snd_resp_rd(), .snd_resp(8'h00), .snd_busy(1'b0), .snd_int(1'b0), .snd_reset(snd_reset),
         .wdog_reset(),
         .dbg_pc(dbg_pc), .dbg_step(dbg_step)
     );

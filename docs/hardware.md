@@ -409,6 +409,24 @@ The YM2151's CT1 output gates the OKI (`oki gain *= ct1`); CT2 unused.
 - 6502 IRQ = timed_int OR ym2151_int. Timed interrupt: **3.579545 MHz/4/16/16/14 = 249.97 Hz**, cleared by any access to 2806.
 - 6502 NMI = command latch full (set by 68k write to 600000, cleared by 6502 read of 2802).
 - 68k IRQ4 = response latch full (set by 6502 write to 2a02, cleared by 68k read of 600000).
+- **Command pacing (not on the real board, same effect).** The command latch has no
+  FIFO and the 68k has no handshake for it: `SoundSendCmd` (0x23ede) polls a80000
+  bit 15, which is `IPT_UNUSED` in MAME and reads 1 here too, so it always writes.
+  A second write before the 6502's NMI handler has read 280a replaces the first, and
+  the NMI is edge-triggered. The handler (57e3) reaches its single latch read 43.0 us
+  after the edge; the 6502 samples NMI once per cycle (T65 too), so a write landing
+  within one cycle (0.56 us) of that read leaves NMI_n low with no edge ever seen --
+  the latch then stays full for good and every later command is ignored. The real
+  68000 never gets there: `SoundQueueFlush` (0x3013c) costs it 46.7 us per queued
+  byte, 3.7 us after the read. TG68K runs that loop ~7 % faster and, after the
+  game's mid-level sound reset, put the second of `1d 1c 39 22` inside the window:
+  one command read, the board deaf until the next reset (the "stuck song part").
+  `jsa2` exports `cmd_pending` = latch full OR fewer than 8 6502 cycles since the
+  read, and `stunrun_main` holds a write to 600000 while it is set (`snd_block`,
+  85 us timeout so a dead board cannot wedge the 68k). JSA bench sweep
+  (`sim/jsa`, `JSA_STALL=1`): with the burst re-spaced anywhere from 2 to 46.7 us
+  all four commands are taken, and at 46.7 us the YM2151 stream stays identical to
+  MAME's.
 - Sound reset: 68k read of 604000 resets the 6502 and clears the response latch.
 
 ---

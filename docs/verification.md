@@ -300,3 +300,64 @@ one row regardless of throughput; the lag itself is unchanged.
 Still open, and separate: the attract sequence runs ~147 frames late (MAME
 starts the demo at frame 559, we start at 705). That is throughput, not logic;
 this fix does not change it.
+
+## The mid-level sound drone (fixed)
+
+Symptom on hardware: partway through a level a whining or alternating drone
+takes over, no sound effects are heard, and it lasts until the level ends.
+Reproduced in `sim/run_system.sh` on a played level (coin 300, Start 360,
+`TB_STICKY=240 TB_STICK_FRAME=400 TB_FIRE_FRAME=480 TB_STICKX=48`):
+`TB_SNDFINE=1120` counts, per frame, 68k command writes, the 6502's reads of
+the command latch, latch-full edges (the 6502's NMI input), YM2151 writes and
+distinct 6502 PCs. MAME's reference is `tools/trace_jsa.lua` on the same inputs.
+
+**What was wrong.** Both machines reset the sound board mid-level (ours frame
+1204, MAME 1176 -- the 68k's `SoundWatchdog`) and then re-send the music state
+as four queued bytes, `1d 1c 39 22`. MAME's 6502 takes all four. Ours wrote 4,
+saw 2 latch-full edges, read the latch **once**, and from then on
+`latch_rd=0` for every later command: the latch was full for the rest of the
+level, the 6502 deaf to it, the last-set music state droning on.
+
+**Mechanism.** The JSA II command latch has no FIFO and the 68k no handshake:
+`SoundSendCmd` (0x23ede) polls a80000 bit 15, which is `IPT_UNUSED` in MAME and
+reads 1 here too, so it always writes. The 6502's NMI handler (57e3) reaches its
+one latch read (`LDX $280a`, 5839) 43.0 us after the edge. The 6502 samples NMI
+once per cycle (T65 does the same), so a write that lands within one cycle
+(0.56 us) *after* that read re-fills the latch before NMI_n was ever sampled
+high: no edge, no handler, and nothing can clear the latch again. The real 68000
+never gets there -- `SoundQueueFlush` (0x3013c) costs it 46.7 us per queued byte
+(MAME's trace), 3.7 us after the read -- but TG68K is paced to an average
+instruction rate, runs that loop ~7 % faster, and put the second write inside
+the window. (Writes that land *before* the read merely overwrite -- a lost
+command, not a dead board.)
+
+**Bench proof** (`sim/jsa`, `JSA_LOGFROM` logs writes, edges, NMI entries,
+reads and RTIs at clock resolution; `artifacts/jsa/spacing/`): MAME's played
+timeline with the four post-reset commands re-spaced --
+
+| spacing | result |
+|---|---|
+| 2 / 10 / 20 / 30 / 40 us | 1-3 commands overwritten, latch ends empty |
+| 43.5 us (0.5 us after the read) | edge seen by the bench, **no NMI entry**, latch full for good |
+| 44 / 46.7 / 60 / 90 us | all four taken (nested NMIs), YM stream identical to MAME |
+
+**Fix.** `jsa2` exports `cmd_pending` = latch full OR fewer than 8 6502 cycles
+since the read; `stunrun_main` holds a write to 600000 while it is set
+(`snd_block`, 85 us timeout so a dead board cannot wedge the 68k). A first
+attempt that held only while the latch was full made things worse by
+construction: it released the write two clocks after the read, the exact spot
+the real machine avoids. With the guard (`JSA_STALL=1` models the 68k hold in
+the bench) every spacing from 2 us to 46.7 us delivers all four commands with
+four NMI entries; at 46.7 us the YM2151 register stream is still identical to
+MAME's (48,624 writes) and `sim/run_jsa.sh 30` passes. 68k board bench
+(`sim/run_main.sh`) unchanged: 43,907 / 43,907 PCs. **System gate** (the same
+played-level run with the guard, `TB_SNDFINE=1120`): the post-reset burst is now
+`cmd_wr=4 latch_rd=4 nmi=4`, held a total of 1,354 clocks (14 us); every later
+command is read the frame it is written (20 writes, 20 reads plus the reset
+handshake read over frames 1120-1319); YM2151 writes after the reset run at
+60-170 per frame against MAME's 60-130.
+
+Lessons: an edge-triggered interrupt behind a level flag has a dead spot one
+sample wide right after the consumer clears it -- look for it whenever a
+faster-than-real producer feeds a real-timed consumer; and "hold until empty"
+is the worst possible pacing for such a latch.

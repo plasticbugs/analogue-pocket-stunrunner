@@ -346,7 +346,9 @@ send anything unsolicited. There is no "sound board bad" message; a dead board
 just gets reset every 180 frames forever and the game keeps running. Every
 sound effect is a `SoundSendCmd` from `SoundQueueFlush` (0x3013c), three
 queued bytes per frame. `SoundSendCmd` only writes if **a80000 bit 15 reads 1**
-(hardware.md says bits 3-15 read 1: keep it that way, or sound is silent).
+(hardware.md says bits 3-15 read 1: keep it that way, or sound is silent). The bit is
+not a handshake -- it is unused on the board and in MAME -- so the 68k never waits for
+the 6502; see hardware.md "Command pacing" for why the core stalls that write instead.
 
 The self-test's sound check (0x8db2) is stricter: read 604000, wait 180
 VBLANKs (`SelfTestWaitVblank`), read 600000 and require 0xff (else message

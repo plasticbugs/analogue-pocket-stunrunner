@@ -572,6 +572,121 @@ int main(int argc, char **argv) {
             if (top->dbg_snd_reset) fprintf(cf, "X %4d\n", frame);
             if (frame % 100 == 0) fflush(cf);
         }
+        // TB_BLITLOG: every FILL/PIXBLT the GSP retires in frames TB_BLITLOG..+6,
+        // with the B-file values from just BEFORE it (sampled at the previous
+        // retire), in MAME's trace field names -- to diff against the blit list
+        // MAME's GSP executes in the equivalent frame (tools/blits_from_trace.py).
+        if (getenv("TB_BLITLOG")) {
+            static int f0 = atoi(getenv("TB_BLITLOG")); static FILE *bf = nullptr;
+            static uint32_t p_saddr = 0, p_daddr = 0, p_dydx = 0, p_dptch = 0, p_sptch = 0, p_ws = 0, p_we = 0, p_ctl = 0;
+            if (top->dbg_gsp_instr) {
+                uint16_t ir = top->dbg_gsp_ir;
+                if (frame >= f0 && frame < f0 + 7 && (ir & 0xff00) == 0x0f00) {
+                    if (!bf) bf = fopen("../artifacts/blits_rtl.txt", "w");
+                    static const char *nm[8] = {"PIXBLT L,L","PIXBLT L,XY","PIXBLT XY,L","PIXBLT XY,XY","PIXBLT B,L","PIXBLT B,XY","FILL L","FILL XY"};
+                    fprintf(bf, "f%4d %-12s B0=%08x B1=%08x B2=%08x B3=%08x B7=%08x B5=%08x B6=%08x CTL=%04x\n", frame, nm[(ir >> 5) & 7], p_saddr, p_sptch, p_daddr, p_dptch, p_dydx, p_ws, p_we, p_ctl);
+                }
+                p_saddr = top->dbg_gsp_saddr; p_daddr = top->dbg_gsp_daddr; p_dydx = top->dbg_gsp_dydx; p_dptch = top->dbg_gsp_dptch; p_sptch = top->dbg_gsp_sptch;
+                p_ws = top->dbg_gsp_wstart; p_we = top->dbg_gsp_wend; p_ctl = top->dbg_gsp_control;
+            }
+            if (frame == f0 + 7 && bf) { fclose(bf); bf = nullptr; printf("blit log written\n"); fflush(stdout); }
+        }
+        // TB_68KPROF=F0: per-frame 68k time budget from frame F0 on, to compare
+        // with MAME's tools/trace_feed.lua. FrameUpdate (0x2c372) spins
+        // `while (!adsp_done) GspFeedDataStream(5)` and the starfield backdrop is
+        // painted only inside that loop, so the number of GspFeedDataStream
+        // entries per frame IS the 68k's spare time (MAME: 0..363 per frame),
+        // and host-port data writes issued from inside it are the paint rate.
+        // Cycle buckets (96 MHz clocks by 68k PC range): the wait loop, the feed
+        // routine, SomCopyToGsp, GspSendCameraBlock, AdspIrqService, GspFrameBegin/End,
+        // everything else, and host-port stall (write pending, GSP not ready).
+        if (getenv("TB_68KPROF")) {
+            static int f0 = atoi(getenv("TB_68KPROF")); static int lastf = -1;
+            static uint64_t iters = 0, feedw = 0, hostw = 0, c_wait = 0, c_feed = 0, c_som = 0, c_cam = 0, c_irq = 0, c_fb = 0, c_fe = 0, c_oth = 0, c_hst = 0;
+            static bool in_feed = false;
+            uint32_t pc = top->dbg_68k_pc;
+            bool feed = (pc >= 0x2274a && pc < 0x22954);
+            if (feed && !in_feed) iters++;
+            in_feed = feed;
+            if (top->dbg_host_wr && top->dbg_host_addr == 2) { hostw++; if (feed) feedw++; }
+            if (top->dbg_host_wr && !top->dbg_host_ready) c_hst++;
+            if (feed) c_feed++;
+            else if (pc >= 0x2c3b4 && pc < 0x2c3da) c_wait++;
+            else if (pc >= 0x2f0ae && pc < 0x2f0f8) c_som++;
+            else if (pc >= 0x2d706 && pc < 0x2d762) c_cam++;
+            else if (pc >= 0x2e418 && pc < 0x2e468) c_irq++;
+            else if (pc >= 0x2f126 && pc < 0x2f1be) c_fb++;
+            else if (pc >= 0x2f1be && pc < 0x2f260) c_fe++;
+            else c_oth++;
+            if (frame != lastf) {
+                if (lastf >= f0)
+                    printf("68kprof %4d: iters %4llu feedw %5llu hostw %5llu | kcyc wait %4llu feed %4llu som %4llu cam %3llu irq %3llu fb %3llu fe %3llu other %4llu hstall %4llu\n",
+                           lastf, (unsigned long long)iters, (unsigned long long)feedw, (unsigned long long)hostw,
+                           (unsigned long long)(c_wait / 1000), (unsigned long long)(c_feed / 1000), (unsigned long long)(c_som / 1000), (unsigned long long)(c_cam / 1000),
+                           (unsigned long long)(c_irq / 1000), (unsigned long long)(c_fb / 1000), (unsigned long long)(c_fe / 1000), (unsigned long long)(c_oth / 1000), (unsigned long long)(c_hst / 1000));
+                iters = feedw = hostw = c_wait = c_feed = c_som = c_cam = c_irq = c_fb = c_fe = c_oth = c_hst = 0;
+                lastf = frame;
+            }
+        }
+        // TB_DEMOSTATE=F0: the attract demo's state per frame from F0 on, in the
+        // same fields as tools/trace_demo.lua (68k work RAM peeked directly):
+        // ff9550 game state, ff9578 section, ffdbee track-list node, ffdbfe
+        // distance, ff9bcc/ff9bce backdrop stream requested/current, ff9bd0
+        // feed pointer. The starfield request (stream 0x17) is what goes missing.
+        if (getenv("TB_DEMOSTATE")) {
+            static int f0 = atoi(getenv("TB_DEMOSTATE")); static int lastf = -1;
+            if (frame != lastf && frame >= f0) {
+                auto &w = top->rootp->vlSymsp->TOP__tb_system_top__core.__PVT__main__DOT__wram;
+                auto rd16 = [&](uint32_t a) -> uint16_t { return w[(a & 0x7fff) >> 1]; };
+                auto rd32 = [&](uint32_t a) -> uint32_t { return ((uint32_t)rd16(a) << 16) | rd16(a + 2); };
+                printf("demo %4d: state %02x sect %2d node %08x dist %5d bd %02x/%02x feed %08x\n", frame,
+                       rd16(0xff9550), rd16(0xff9578), rd32(0xffdbee), (int16_t)rd16(0xffdbfe),
+                       rd16(0xff9bcc) & 0xff, rd16(0xff9bce) & 0xff, rd32(0xff9bd0));
+                lastf = frame;
+            }
+        }
+        // TB_SNDFINE=F0: per FRAME sound-board activity for frames F0..F0+199:
+        // 68k command writes and the 6502's reads of that latch (a write not
+        // followed by a read before the next write is a lost command), NMI
+        // edges, YM/OKI writes, distinct 6502 PCs, and the clock-enable counts
+        // (nominal per frame: cen_cpu 29,730, cen_ym 59,460).
+        if (getenv("TB_SNDFINE")) {
+            static int f0 = atoi(getenv("TB_SNDFINE")); static int lastf = -1;
+            static long cw = 0, cr = 0, nmi = 0, ym = 0, oki = 0, ccpu = 0, cym = 0, stall = 0; static int pfull = 0;
+            static std::set<uint16_t> pcs; static std::string cmds;
+            if (frame >= f0 && frame < f0 + 200) {
+                if (top->dbg_snd_cmd_wr) { cw++; char b[8]; snprintf(b, 8, "%02x ", top->dbg_snd_cmd); cmds += b; }
+                if (top->dbg_snd_rd_cmd) cr++;
+                if (top->dbg_snd_block) stall++;
+                if (top->dbg_snd_cmd_full && !pfull) nmi++;
+                pfull = top->dbg_snd_cmd_full;
+                if (top->dbg_ym_wr) ym++;
+                if (top->dbg_oki_wr) oki++;
+                if (top->dbg_cen_cpu_snd) ccpu++;
+                if (top->dbg_cen_ym) cym++;
+                if (top->dbg_6502_sync && pcs.size() < 4096) pcs.insert(top->dbg_6502_addr);
+            }
+            if (frame != lastf) {
+                if (lastf >= f0 && lastf < f0 + 200)
+                    printf("sf %4d: cmd_wr=%ld latch_rd=%ld nmi=%ld ym=%4ld oki=%ld pcs=%4zu cen_cpu=%ld cen_ym=%ld stall=%ld%s%s%s\n",
+                           lastf, cw, cr, nmi, ym, oki, pcs.size(), ccpu, cym, stall, top->dbg_snd_reset ? " RESET" : "", cmds.empty() ? "" : "  cmds: ", cmds.c_str());
+                cw = cr = nmi = ym = oki = ccpu = cym = stall = 0; pcs.clear(); cmds.clear(); lastf = frame;
+            }
+        }
+        // TB_YMLOG: every YM2151 write (a0 = 0 register select / 1 data, byte)
+        // with its frame, to artifacts/ym_rtl.txt -- the same stream MAME's
+        // tools/trace_jsa.lua logs as YM0/YM1, so the two can be diffed by
+        // sequence (tools/compare_ym.py) to find the first register write on
+        // which the system's sound board and MAME's part company.
+        if (getenv("TB_YMLOG")) {
+            static FILE *yf = nullptr;
+            if (!yf) yf = fopen("../artifacts/ym_rtl.txt", "w");
+            if (top->dbg_ym_wr) fprintf(yf, "%d YM%d %02x\n", frame, top->dbg_ym_a0 ? 1 : 0, top->dbg_ym_d);
+            if (top->dbg_snd_cmd_wr) fprintf(yf, "%d CMD %02x cyc=%llu\n", frame, top->dbg_snd_cmd, (unsigned long long)cyc);
+            if (top->dbg_snd_rd_cmd) fprintf(yf, "%d LATCHRD cyc=%llu\n", frame, (unsigned long long)cyc);
+            if (top->dbg_snd_reset) fprintf(yf, "%d SRESET cyc=%llu\n", frame, (unsigned long long)cyc);
+            if (frame % 100 == 0) fflush(yf);
+        }
         // TB_MEMDUMP: dump the ADSP program and data RAM at frame TB_MEMDUMP so it
         // can be diffed against MAME's at the same frame. The ADSP bench loads PM
         // from MAME's dump, so nothing has ever checked the copy our own 68k

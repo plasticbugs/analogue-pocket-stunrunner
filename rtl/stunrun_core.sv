@@ -155,6 +155,7 @@ module stunrun_core #(
     logic [13:0] som_addr_b;
     logic        adsp_bank, adsp_halt, adsp_reset, adsp_int, adsp_int_clr, adsp_xflag;
     logic        snd_cmd_wr, snd_resp_rd, snd_int, snd_reset;
+    logic        snd_busy;
     logic  [7:0] snd_cmd, snd_resp;
     logic        v_hblank, v_vblank;
     logic [11:0] nv_addr_m;
@@ -184,7 +185,7 @@ module stunrun_core #(
         .som_addr(som_addr_b), .som_we(som_we), .som_be(som_be), .som_wdata(som_wdata), .som_rdata(som_rdata_b),
         .adsp_bank(adsp_bank), .adsp_halt(adsp_halt), .adsp_reset(adsp_reset),
         .adsp_int(adsp_int), .adsp_int_clr(adsp_int_clr), .adsp_xflag(adsp_xflag),
-        .snd_cmd_wr(snd_cmd_wr), .snd_cmd(snd_cmd), .snd_resp_rd(snd_resp_rd), .snd_resp(snd_resp),
+        .snd_cmd_wr(snd_cmd_wr), .snd_cmd(snd_cmd), .snd_resp_rd(snd_resp_rd), .snd_resp(snd_resp), .snd_busy(snd_busy),
         .snd_int(snd_int), .snd_reset(snd_reset),
         .wdog_reset(wdog_reset),
         .dbg_pc(dbg_68k_pc), .dbg_step()
@@ -395,7 +396,7 @@ module stunrun_core #(
     jsa2 sound (
         .clk(clk), .reset(mreset), .cen_ym(cen_ym), .cen_oki(cen_oki),
         .snd_reset(snd_reset),
-        .cmd_wr(snd_cmd_wr), .cmd_data(snd_cmd), .resp_rd(snd_resp_rd), .resp_data(snd_resp), .main_irq(snd_int),
+        .cmd_wr(snd_cmd_wr), .cmd_data(snd_cmd), .resp_rd(snd_resp_rd), .resp_data(snd_resp), .main_irq(snd_int), .cmd_pending(snd_busy),
         .coins({1'b0, coin2, coin1}), .test(service),
         .rom_we(dl_pulse && dl_is_jsa), .rom_waddr(dl_addr[15:0]), .rom_wdata(dl_data),
         .oki_addr(oki_addr), .oki_req(oki_req), .oki_data(oki_data), .oki_ack(oki_ack),

@@ -39,6 +39,7 @@ module jsa2 (
     input  logic        resp_rd,
     output logic  [7:0] resp_data,
     output logic        main_irq,      // response latch full -> 68k IRQ4
+    output logic        cmd_pending,   // command latch full: 68k wrote, 6502 has not read it yet
 
     // inputs
     input  logic  [2:0] coins,         // active high; Stun Runner's coins are on the main board, these read 0
@@ -385,6 +386,21 @@ module jsa2 (
     // -------------------------------------------------------------------------
     // 2804: bit7 self test, bit6 low while a command is waiting, bit5 response
     // latch full, bits 2:0 coins.
+    // cmd_pending holds the 68k's next command write off (stunrun_main
+    // snd_block) while the latch is full AND for 8 more 6502 cycles after the
+    // 6502 reads it. The 6502 samples NMI once per cycle (T65 does the same),
+    // so a write landing within one cycle of the read leaves NMI_n low with no
+    // edge ever seen: the latch then stays full for good and every later
+    // command is ignored. A real 68000 running SoundQueueFlush writes 3.7 us
+    // after the read (46.7 us spacing vs the handler's 43.0 us to its read);
+    // TG68K runs that loop ~7 % faster and lands inside the window.
+    logic [3:0] cmd_guard;
+    always_ff @(posedge clk) begin
+        if (board_rst)                     cmd_guard <= 4'd0;
+        else if (rd_cmd)                   cmd_guard <= 4'd8;
+        else if (cen_cpu && cmd_guard != 0) cmd_guard <= cmd_guard - 4'd1;
+    end
+    assign cmd_pending = cmd_full | (cmd_guard != 4'd0);
     wire [7:0] rdio = {test, ~cmd_full, resp_full, 2'b00, coins};
 
     always_comb begin

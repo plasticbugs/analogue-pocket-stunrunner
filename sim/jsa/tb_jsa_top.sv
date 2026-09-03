@@ -39,7 +39,10 @@ module tb_jsa_top #(
     output logic        dbg_sync,
     output logic [15:0] dbg_addr,
     output logic [17:0] dbg_oki_addr,
-    output logic        dbg_oki_req
+    output logic        dbg_oki_req,
+    output logic        dbg_rd_cmd,     // 6502 read of the command latch
+    output logic        dbg_cmd_full,   // command latch full (drives NMI_n low)
+    output logic        dbg_cmd_pending // jsa2's hold-off for the 68k's next write
 );
     localparam [31:0] INC_YM  = 32'(3579545.0 / CLK_HZ * 4294967296.0);
     localparam [31:0] INC_OKI = 32'(1193181.7 / CLK_HZ * 4294967296.0);
@@ -76,6 +79,9 @@ module tb_jsa_top #(
     end
     assign dbg_oki_addr = oki_addr;
     assign dbg_oki_req  = oki_req;
+    assign dbg_rd_cmd   = u_jsa.rd_cmd;
+    assign dbg_cmd_full = u_jsa.cmd_full;
+    assign dbg_cmd_pending = u_jsa.cmd_pending;
 
     jsa2 u_jsa (
         .clk        (clk),

@@ -30,7 +30,7 @@ module tb_system_top (
     output logic  [9:0] dbg_pal_waddr,
     output logic [15:0] dbg_pal_wdata,
     output logic  [1:0] dbg_palbank,
-    output logic        dbg_snd_cmd_wr, dbg_snd_resp_rd, dbg_snd_reset, dbg_gsp_int, dbg_host_wr,
+    output logic        dbg_snd_cmd_wr, dbg_snd_resp_rd, dbg_snd_reset, dbg_gsp_int, dbg_host_wr, dbg_host_ready, dbg_snd_block,
     output logic  [7:0] dbg_snd_cmd, dbg_snd_resp,
     output logic  [1:0] dbg_host_addr,
     output logic [15:0] dbg_host_wdata,
@@ -48,7 +48,10 @@ module tb_system_top (
     output logic [15:0] dbg_dm_wdata_68k,
     output logic        dbg_sim_rd, dbg_sim_fetching,
     output logic [31:0] dbg_gsp_st,
-    output logic        dbg_ym_wr, dbg_oki_wr, dbg_6502_sync, dbg_snd_cmd_full, dbg_snd_irq,
+    output logic [15:0] dbg_gsp_ir,
+    output logic [31:0] dbg_gsp_saddr, dbg_gsp_daddr, dbg_gsp_dydx, dbg_gsp_dptch, dbg_gsp_sptch, dbg_gsp_wstart, dbg_gsp_wend,
+    output logic        dbg_ym_wr, dbg_oki_wr, dbg_6502_sync, dbg_snd_cmd_full, dbg_snd_irq, dbg_snd_rd_cmd, dbg_cen_cpu_snd, dbg_cen_ym, dbg_ym_a0,
+    output logic  [7:0] dbg_ym_d,
     output logic [15:0] dbg_6502_addr,
     output logic [17:0] dbg_sim_idx,
     output logic [15:0] dbg_sim_word,
@@ -95,7 +98,7 @@ module tb_system_top (
     );
     assign model_errors = chip.errors;
     assign dbg_pal_we_rg = core.pal_we_rg; assign dbg_pal_we_b = core.pal_we_b; assign dbg_pal_waddr = core.pal_waddr; assign dbg_pal_wdata = core.pal_wdata; assign dbg_palbank = core.palbank;
-    assign dbg_snd_cmd_wr = core.snd_cmd_wr; assign dbg_snd_resp_rd = core.snd_resp_rd; assign dbg_snd_reset = core.snd_reset; assign dbg_gsp_int = core.gsp_int; assign dbg_host_wr = core.host_wr;
+    assign dbg_snd_cmd_wr = core.snd_cmd_wr; assign dbg_snd_resp_rd = core.snd_resp_rd; assign dbg_snd_reset = core.snd_reset; assign dbg_gsp_int = core.gsp_int; assign dbg_host_wr = core.host_wr; assign dbg_host_ready = core.host_ready; assign dbg_snd_block = core.main.snd_block;
     assign dbg_snd_cmd = core.snd_cmd; assign dbg_snd_resp = core.snd_resp; assign dbg_host_addr = core.host_addr; assign dbg_host_wdata = core.host_wdata;
     assign dbg_gmem_req = core.gmem_req; assign dbg_gmem_we = core.gmem_we; assign dbg_gmem_ack = core.gmem_ack; assign dbg_gmem_addr = core.gmem_addr; assign dbg_gmem_wdata = core.gmem_wdata;
     assign dbg_gio_we = core.gsp.w_we && core.gsp.w_is_io; assign dbg_gio_addr = core.gsp.w_addr[4:0]; assign dbg_gio_wdata = core.gsp.w_wdata;
@@ -126,12 +129,20 @@ module tb_system_top (
     assign dbg_pm_we_68k = core.main.pm_we; assign dbg_pm_addr_68k = core.main.pm_addr; assign dbg_pm_wdata_68k = core.main.pm_wdata;
     assign dbg_gsp_intpend = core.gsp.io[18];
     assign dbg_gsp_st = core.gsp.st;
+    assign dbg_gsp_ir = core.gsp.ir;
+    assign dbg_gsp_saddr = core.gsp.rf[30]; assign dbg_gsp_daddr = core.gsp.rf[28]; assign dbg_gsp_dydx = core.gsp.rf[23];
+    assign dbg_gsp_dptch = core.gsp.rf[27]; assign dbg_gsp_sptch = core.gsp.rf[29];
+    assign dbg_gsp_wstart = core.gsp.rf[25]; assign dbg_gsp_wend = core.gsp.rf[24];
     assign dbg_ym_wr = core.sound.dbg_ym_wr;
+    assign dbg_ym_a0 = core.sound.dbg_ym_a0; assign dbg_ym_d = core.sound.dbg_ym_d;
     assign dbg_oki_wr = core.sound.dbg_io_wr && (core.sound.dbg_io_sel == 2'd0);
     assign dbg_6502_sync = core.sound.dbg_sync;
     assign dbg_6502_addr = core.sound.dbg_addr;
     assign dbg_snd_cmd_full = core.sound.cmd_full;
     assign dbg_snd_irq = core.sound.irq;
+    assign dbg_snd_rd_cmd = core.sound.rd_cmd;
+    assign dbg_cen_cpu_snd = core.sound.cen_cpu;
+    assign dbg_cen_ym = core.cen_ym;
     assign dbg_gsp_fraddr  = core.gsp.fr_addr;
     assign dbg_gsp_frval   = core.gsp.fr_val;
     assign dbg_gsp_intvec  = core.gsp.int_vec;

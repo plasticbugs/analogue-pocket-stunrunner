@@ -82,6 +82,7 @@ module stunrun_main #(
     output logic  [7:0] snd_cmd,
     output logic        snd_resp_rd,
     input  logic  [7:0] snd_resp,
+    input  logic        snd_busy,       // JSA command latch still unread by the 6502
     input  logic        snd_int,      // level 4
     output logic        snd_reset,
 
@@ -139,6 +140,23 @@ module stunrun_main #(
 
     wire [23:1] A     = addr_out[23:1];
     wire        is_wr = (busstate == 2'b11);
+
+    // Sound command pacing. The JSA II command latch has no FIFO and the 68k has
+    // no handshake for it (SoundSendCmd polls a80000 bit 15, which is unused
+    // and reads 1), so a second write before the 6502's NMI handler has read
+    // the latch silently replaces the first -- and the NMI is edge-triggered, so
+    // no second interrupt comes either. On the real board that never happens:
+    // SoundQueueFlush's loop costs a real 68000 ~370 cycles (46.7 us in MAME)
+    // per command and the 1.79 MHz 6502 reads the latch within ~20 us. TG68K is
+    // paced to the average instruction rate, not per-instruction cycle counts,
+    // and runs this stretch faster, which lost three of the four commands the
+    // game sends after its mid-level sound reset (the "stuck song part" drone).
+    // Holding the write until the latch is empty reproduces the real timing
+    // exactly where it matters and never fires otherwise; the timeout keeps a
+    // dead sound board (nobody reads) from wedging the 68k -- 8192 clocks at
+    // 96 MHz is 85 us, then the write overwrites as the real hardware would.
+    logic [13:0] snd_stall;
+    wire         snd_block = is_wr && sel_snd && snd_busy && !snd_stall[13];
     wire        is_rd = (busstate == 2'b00) || (busstate == 2'b10);
     wire        uds   = ~nUDS;             // D15:8
     wire        lds   = ~nLDS;             // D7:0
@@ -240,7 +258,7 @@ module stunrun_main #(
         step_gap <= {step_gap[1:0], clkena};
 
         if (reset) begin
-            bst <= B_IDLE; tok <= '0; clkena <= 1'b0; rom_req <= 1'b0; step_gap <= '0;
+            bst <= B_IDLE; tok <= '0; clkena <= 1'b0; rom_req <= 1'b0; step_gap <= '0; snd_stall <= '0;
             zp1 <= 1'b0; zp2 <= 1'b0; gsp_reset_n <= 1'b0;
             adsp_bank <= 1'b0; br_n_lat <= 1'b1; halt_n_lat <= 1'b0; adsp_reset <= 1'b1;
             irq_timer_pend <= 1'b0; timer_cnt <= '0;
@@ -248,6 +266,10 @@ module stunrun_main #(
         end else begin
             // step pacing
             if (cen_8m && tok < 6'd48) tok <= tok + 6'(STEP_GAIN);
+
+            // sound command stall timer (see snd_block)
+            if (!(is_wr && sel_snd))      snd_stall <= '0;
+            else if (snd_block && bst == B_IDLE) snd_stall <= snd_stall + 14'd1;
 
             // 244.14 Hz timer: 32768 cen_8m pulses
             if (cen_8m) begin
@@ -271,7 +293,7 @@ module stunrun_main #(
                     // in the SDC describes real silicon. The step rate is set by
                     // the token bucket (one step per 3.75 cen_8m, about 45
                     // clocks), so five clocks of bus FSM cost nothing.
-                    if (tok >= 6'(STEP_COST) && !clkena && step_gap == 3'd0) begin
+                    if (tok >= 6'(STEP_COST) && !clkena && step_gap == 3'd0 && !snd_block) begin
                         // skipFetch: the kernel is in a read state whose bus
                         // cycle must NOT happen (68010 CLR/SF/etc. do not read
                         // their destination); step without touching the bus,
