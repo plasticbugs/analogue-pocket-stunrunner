@@ -422,6 +422,18 @@ set_multicycle_path -hold  1 -from $BLTPIX_SRC -to $GSP_ALL
 # consumers (the S_ISSUE captures, 1 clock after S_LATCH) are NOT relaxed.
 # ==============================================================================
 set ADSP_DAG [get_registers {*|adsp2100:*|r_i[*][*] *|adsp2100:*|r_m[*][*] *|adsp2100:*|r_l[*][*] *|adsp2100:*|r_base[*][*]}]
+# cntr -> the DAG files. The loop counter is written in S_ISSUE (the loop-end
+# CE decrement) and in S_WB (a register move into CNTR, CNTR_PUSH/CNTR_POP,
+# the conditional-CE decrement) -- every site checked mechanically -- and the
+# DAG files r_i/r_m/r_l/r_base are written ONLY in S_WB. The read is the
+# register-move source mux (read_reg3 -> mv_val) on S_WB's tick, so the
+# tightest launch->capture is an S_ISSUE write to the same instruction's S_WB:
+# S_ISSUE -> S_MEM -> S_WB, two clocks (S_MEM can only stall longer on
+# io_wait); a previous instruction's S_WB write is >= 5 states away. 2/1.
+# Failed by -0.064 ns on a balanced-fit placement (and in CI) without it.
+set_multicycle_path -setup 2 -from [get_registers {*|adsp2100:*|cntr[*]}] -to $ADSP_DAG
+set_multicycle_path -hold  1 -from [get_registers {*|adsp2100:*|cntr[*]}] -to $ADSP_DAG
+
 set_multicycle_path -setup 3 -from [get_registers {*|adsp2100:*|ir[*]}] -to $ADSP_DAG
 set_multicycle_path -hold  2 -from [get_registers {*|adsp2100:*|ir[*]}] -to $ADSP_DAG
 

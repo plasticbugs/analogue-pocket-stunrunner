@@ -67,6 +67,13 @@ if which == "all" or which == "s3" then
 end
 local in0 = m.ioport.ports[":mainpcb:IN0"]
 local start = m.ioport.ports[":mainpcb:a80000"].fields["1 Player Start"]
+local fire = m.ioport.ports[":mainpcb:a80000"].fields["P1 Button 1"]
+local raise_frame = tonumber(os.getenv("RAISE_FRAME"))
+local fire_frame = tonumber(os.getenv("FIRE_FRAME"))
+local stickx = tonumber(os.getenv("STICKX"))
+local px_field, py_field
+for k,_ in pairs(m.ioport.ports[":mainpcb:8BADC.0"].fields) do px_field = m.ioport.ports[":mainpcb:8BADC.0"].fields[k] end
+for k,_ in pairs(m.ioport.ports[":mainpcb:8BADC.2"].fields) do py_field = m.ioport.ports[":mainpcb:8BADC.2"].fields[k] end
 emu.register_frame_done(function()
   frame = frame + 1
   if frame == 1 then f:write(string.format("%.7f 1 FRAME0\n", now())) end
@@ -74,5 +81,11 @@ emu.register_frame_done(function()
   if frame == coin_frame + 12 then in0.fields["Coin 1"]:clear_value() end
   if frame == coin_frame + 200 then start:set_value(1); f:write(string.format("%.7f %d START_DOWN\n", now(), frame)) end
   if frame == coin_frame + 215 then start:clear_value() end
+  -- optional: reach a played level (RAISE_FRAME raises the yoke to pick a
+  -- level, FIRE_FRAME presses the trigger, STICKX holds the yoke X from then)
+  if raise_frame and frame == raise_frame then py_field:set_value(240); f:write(string.format("%.7f %d RAISE\n", now(), frame)) end
+  if fire_frame and frame == fire_frame then fire:set_value(1); f:write(string.format("%.7f %d FIRE_DOWN\n", now(), frame)) end
+  if fire_frame and frame == fire_frame + 6 then fire:clear_value() end
+  if stickx and frame == (fire_frame or 0) + 20 then px_field:set_value(stickx) end
   if frame >= nframes then f:close(); m:exit() end
 end)

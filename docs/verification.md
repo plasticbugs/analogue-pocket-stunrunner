@@ -76,6 +76,13 @@ is not here has not been verified.
   (`projects/worst0c.tcl`, `worst85c.tcl`) against the fitted netlist take
   three minutes; a relax-only SDC edit can be trusted on the existing fit, an
   RTL settle tick cannot and needs the recompile.
+  Fourth instance: ADSP `cntr -> r_base` at -0.064 ns, first seen in CI's
+  placement of the same RTL that closed at +0.40 locally, then reproduced
+  locally with the fitter in BALANCED mode. cntr is written in S_ISSUE and
+  S_WB, the DAG files only in S_WB, the read is S_WB's move mux: two clocks
+  minimum, constrained 2/1. The fitter mode itself was not the lever --
+  BALANCED closed at +0.06 where AGGRESSIVE AREA closed at +0.40 on the same
+  RTL and the same exceptions -- so the area-first settings stay.
 - **A GSP bench window must not open inside a blit.** `tools/trace_gsp.lua`
   windows that start while MAME is still "eating" a PIXBLT's cycles (P set,
   continuation entries at the top of the trace) hit the bench's forced-
