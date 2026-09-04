@@ -80,6 +80,8 @@ static void srt_write(uint32_t bitaddr) {  // from_shiftreg: copy row
         uint32_t a = (bitaddr - 0xff800000) / 16; a &= vram_mask; a &= ~255u;
         std::vector<uint16_t> tmp(256); for (int i = 0; i < 256; i++) tmp[i] = vram[(shiftreg_src + i) & vram_mask];
         for (int i = 0; i < 256; i++) vram[(a + i) & vram_mask] = tmp[i];
+        if (g_watch >= 0 && (uint32_t)g_watch >= a && (uint32_t)g_watch < a + 256)
+            printf("WATCH word %06lx via srt-row-copy from row %u (word %06x) data=%04x at trace #%ld %s\n", g_watch, shiftreg_src / 256, shiftreg_src + ((uint32_t)g_watch - a), tmp[(uint32_t)g_watch - a], g_cur_idx, g_cur_dis);
     }
 }
 

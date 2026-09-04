@@ -17,6 +17,23 @@ local out = os.getenv("OUT") or "gsp_window"
 local start = tonumber(os.getenv("START") or "1500")
 local stop = tonumber(os.getenv("STOP") or tostring(start + 3))
 local frames = 0
+-- IN=<tools/record_inputs.lua log>: replay a played run while tracing (IN_REPLAY)
+local rec = {}
+if os.getenv("IN") then
+  for l in io.lines(os.getenv("IN")) do
+    local f, x, y, fi, bo, co, st = l:match("(%d+) (%d+) (%d+) (%d+) (%d+) (%d+) (%d+)")
+    if f then rec[tonumber(f)] = {tonumber(x), tonumber(y), tonumber(fi), tonumber(bo), tonumber(co), tonumber(st)} end
+  end
+end
+local function replay_inputs(frame)
+  local r = rec[frame + 1]; if not r then return end
+  local ports = m.ioport.ports
+  local function afield(p) for _, f in pairs(ports[p].fields) do return f end end
+  local function setb(field, v) if field then if v == 1 then field:set_value(1) else field:clear_value() end end end
+  afield(":mainpcb:8BADC.0"):set_value(r[1]); afield(":mainpcb:8BADC.2"):set_value(r[2])
+  local p80, pin0 = ports[":mainpcb:a80000"], ports[":mainpcb:IN0"]
+  setb(p80.fields["P1 Button 1"], r[3]); setb(p80.fields["P1 Button 2"], r[4]); setb(pin0.fields["Coin 1"], r[5]); setb(p80.fields["1 Player Start"], r[6])
+end
 local hostcount = 0
 local hostlog = nil
 local active = false
@@ -101,6 +118,7 @@ local finished = false
 local tries = 0
 emu.register_frame_done(function()
   frames = frames + 1
+  replay_inputs(frames)
   if frames >= start - 1 and not armed and not active then
     -- Probe which CPU is visible; "next" walks to the next device. Repeat
     -- until it is the GSP (the scheduler order is 68010, GSP, ADSP, 6502).

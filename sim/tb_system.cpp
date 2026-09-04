@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <vector>
+#include <array>
 #include <map>
 #include <set>
 #include <algorithm>
@@ -1060,6 +1061,30 @@ int main(int argc, char **argv) {
                 // TB_FIRE_FRAME: press Fire ("trigger") for 6 frames at that frame -- starts a level
                 { static int ff = getenv("TB_FIRE_FRAME") ? atoi(getenv("TB_FIRE_FRAME")) : -1;
                   if (ff >= 0) top->fire = (frame >= ff && frame < ff + 6); }
+                // TB_INPUTS=file: replay a tools/record_inputs.lua log ("frame x y fire boost coin start"
+                // per line) -- the inputs MAME saw at frame N are applied at our frame N + TB_INPUTS_OFFSET
+                // (default 18, our boot lag), so a played level can be reproduced frame for frame.
+                {
+                    static std::vector<std::array<int, 6>> rec; static bool loaded = false;
+                    static int off = getenv("TB_INPUTS_OFFSET") ? atoi(getenv("TB_INPUTS_OFFSET")) : 18;
+                    if (!loaded && getenv("TB_INPUTS")) {
+                        loaded = true;
+                        if (FILE *fi = fopen(getenv("TB_INPUTS"), "r")) {
+                            int f, x, y, fr, bo, co, st;
+                            while (fscanf(fi, "%d %d %d %d %d %d %d", &f, &x, &y, &fr, &bo, &co, &st) == 7) {
+                                if ((int)rec.size() <= f) rec.resize(f + 1, {0x80, 0x80, 0, 0, 0, 0});
+                                rec[f] = {x, y, fr, bo, co, st};
+                            }
+                            fclose(fi);
+                            printf("TB_INPUTS: %zu frames of recorded inputs, offset %d\n", rec.size(), off);
+                        }
+                    }
+                    int rf = frame - off;
+                    if (!rec.empty() && rf >= 0 && rf < (int)rec.size()) {
+                        top->stick_x = rec[rf][0] & 0xff; top->stick_y = rec[rf][1] & 0xff;
+                        top->fire = rec[rf][2]; top->boost = rec[rf][3]; top->coin1 = rec[rf][4]; top->start = rec[rf][5];
+                    }
+                }
                 printf("frame %d cyc %llu 68k %08x opc %08x gsp %08x adsp %04x flags %02x\n", frame, (unsigned long long)cyc,
                        top->dbg_68k_pc, top->dbg_68k_opc, top->dbg_gsp_pc, top->dbg_adsp_pc, top->dbg_flags);
                 fflush(stdout);

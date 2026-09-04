@@ -505,3 +505,36 @@ frames per second); with burst rows it is 3, and MAME's played level (207 of 207
 ticks at 3 frames, `tools/trace_waitflag.lua` with COIN/START) is the same rate.
 The user's first impression of the 0.2.0 build, that the game ran too fast, was
 the missing 5 frames per second arriving; MAME replays run at the same speed.
+
+## The level-end tally text shimmer (open; cause found)
+
+Symptom on the Pocket: on the level-end tally screen, while the repair arms
+animate, the score text in the box shimmers / loses pixels. Not in attract;
+reproduced from a recorded Intermediate run (`tools/record_inputs.lua`, bench
+`TB_INPUTS`, MAME `tools/replay_inputs.lua`).
+
+**Evidence.** A GSP trace window over the sequence (`artifacts/gsp/repair*`,
+MAME frames 4950-5060 of the replayed run) is the first window the GSP bench
+fails: every one of 434,972 instructions matches MAME's trace, but the end
+VRAM differs in 2,113 words, and only transiently (windows ending at 5019 and
+5047 pass, 5033 and 5060 fail). The differing words hold the clear colour
+(0xf0) where MAME holds the repair arm's shades, inside the tally box region.
+MAME never writes those words in the window; ours are last written by the
+340 x 140 tally-box `PIXBLT L,XY` (23,800 words) as it *resumes after the
+display-interrupt handler's RETI*. The handler's dynamic extent, once per
+rendered game frame, includes the shift-register `FILL L` rows at
+fff43030/fff431f0 -- the back-buffer clear.
+
+**Mechanism.** MAME's blits are atomic, so its DI can only fall between
+instructions: clear, then draw, always. Ours interrupts the tally-box copy
+between rows (the flicker fix), the handler clears, the copy resumes over the
+cleared rows, and the arm drawn earlier in that frame is gone from part of the
+box for one rendered frame. The copy costs ~50 clocks a word (~12 ms), so the
+DI lands inside it often during this animation.
+
+**Fix (planned).** A burst fast path in the blit engine for 8-bpp replace,
+non-transparent row copies and fills -- read the source row into the row
+buffer with a burst, write it with a burst, as the SRT rows already do -- so
+such a copy takes ~0.5 ms and effectively never straddles a display interrupt;
+it would also lift the 3D rate to MAME's 3-frame cadence. Reverting the
+between-row interruption is not an option (late DI = the level-select flicker).
