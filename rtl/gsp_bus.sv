@@ -11,13 +11,17 @@
 //   f5800000-f5800fff  palette hi (blue D7:0)
 //   anything else      reads 0xffff, writes ignored
 //
-// Shift-register transfers (mem_srt): a read cycle captures the source row
-// (256 words, or 1024 in the expander region) into a row buffer -- the VRAM
-// shift register -- and a write cycle, when the control_hi enable is set,
-// streams the buffer into the destination row. Both go over the SDRAM burst
-// port in 32-word pieces (one READ/WRITE per 2 clocks in the open row) so the
-// display line fetch never waits more than a piece. Doing this word by word
-// through the random port cost ~5,000 clocks a row and froze the GSP inside a
+// Shift-register transfers (mem_srt): a read cycle latches the source row
+// address; a write cycle, when the control_hi enable is set, copies the
+// source row's CURRENT contents (256 words, or 1024 in the expander region)
+// to the destination row -- MAME keeps a pointer to the source row and
+// memmoves it at the write (harddriv_v.cpp), and the game relies on that: it
+// modifies the source row between the transfer-in and the transfer-out. A
+// snapshot taken at the read (tried first) left stale pixels along polygon
+// seams. The copy goes through a row buffer over the SDRAM burst port, in
+// 32-word pieces (one READ/WRITE per 2 clocks in the open row) so the display
+// line fetch never waits more than a piece: ~1,300 clocks a row against
+// ~5,000 word by word through the random port, which froze the GSP inside a
 // full-screen FILL for most of a frame (docs/verification.md, "the dead frame").
 //------------------------------------------------------------------------------
 `default_nettype none
@@ -91,7 +95,7 @@ module gsp_bus (
     logic [10:0] srt_cnt;             // words transferred so far (piece base)
     logic [10:0] srt_len;
     logic [17:0] srt_dst;
-    logic        srt_we;              // 0: capture source row, 1: write destination row
+    logic        srt_we;              // 0: read the source row into the buffer, 1: write it to the destination
     // the shift register: 1024 x 16, written by burst reads, read by burst writes
     sdpram #(.AW(10), .DW(16)) rowbuf (.clk(clk), .we(sb_wr), .waddr(srt_cnt[9:0] + sb_idx), .wdata(sb_data),
                                        .raddr(srt_cnt[9:0] + sb_widx), .q(sb_wdata));
@@ -116,12 +120,10 @@ module gsp_bus (
                             // shift-register transfer: read = latch source row, write = copy
                             if (!mem_we) begin
                                 srt_src <= {vram_word[17:8], 8'd0};
-                                srt_we <= 1'b0; srt_len <= 11'd256; srt_cnt <= '0;
-                                mem_rdata <= 16'h0000;
-                                st <= SRT_BURST;
+                                mem_rdata <= 16'h0000; mem_ack <= 1'b1;
                             end else if (srt_enable) begin
                                 srt_dst <= {vram_word[17:8], 8'd0};
-                                srt_we <= 1'b1; srt_len <= 11'd256; srt_cnt <= '0;
+                                srt_we <= 1'b0; srt_len <= 11'd256; srt_cnt <= '0;   // read phase first
                                 st <= SRT_BURST;
                             end else
                                 mem_ack <= 1'b1;
@@ -137,12 +139,10 @@ module gsp_bus (
                         if (mem_srt) begin
                             if (!mem_we) begin
                                 srt_src <= {mem_addr[19:12], 10'd0};      // (addr>>2) & ~1023 words
-                                srt_we <= 1'b0; srt_len <= 11'd1024; srt_cnt <= '0;
-                                mem_rdata <= 16'h0000;
-                                st <= SRT_BURST;
+                                mem_rdata <= 16'h0000; mem_ack <= 1'b1;
                             end else if (srt_enable) begin
                                 srt_dst <= {mem_addr[19:12], 10'd0};
-                                srt_we <= 1'b1; srt_len <= 11'd1024; srt_cnt <= '0;
+                                srt_we <= 1'b0; srt_len <= 11'd1024; srt_cnt <= '0;  // read phase first
                                 st <= SRT_BURST;
                             end else
                                 mem_ack <= 1'b1;
@@ -223,9 +223,14 @@ module gsp_bus (
                     sb_req  <= 1'b0;
                     srt_cnt <= srt_cnt + 11'd32;
                     if (srt_cnt + 11'd32 == srt_len) begin
-                        mem_ack <= 1'b1;
-                        if (srt_we) vram_copied <= 1'b1;
-                        st <= IDLE;
+                        if (!srt_we) begin
+                            // source row is in the buffer: now write it out
+                            srt_we <= 1'b1; srt_cnt <= '0;
+                            st <= SRT_BURST_GAP;
+                        end else begin
+                            mem_ack <= 1'b1; vram_copied <= 1'b1;
+                            st <= IDLE;
+                        end
                     end else
                         st <= SRT_BURST_GAP;       // a clock with sb_req low: the controller re-arms
                 end

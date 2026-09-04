@@ -450,12 +450,26 @@ cycle; MAME's `hdgsp_shiftreg` is a memcpy.
 
 **Fix.** `sdram_ctrl` gained burst writes on its burst port (`b_we`,
 `b_wdata`, `b_widx`: one WRITE per 2 clocks in the open row, DQM both bytes,
-precharge 2 clocks after the last write). `gsp_bus` captures the source row
-into a 1,024 x 16 row buffer -- the VRAM shift register, so a later change to
-the source row no longer leaks into the transfer -- at the SRT read, and
-streams it into the destination at the SRT write, both as 32-word burst
-pieces with a one-clock gap so the display line fetch (which `stunrun_core`
-now arbitrates first) waits at most one piece. A row now costs ~400 clocks.
+precharge 2 clocks after the last write). `gsp_bus` copies the row through a
+1,024 x 16 row buffer as 32-word burst pieces with a one-clock gap, so the
+display line fetch (which `stunrun_core` now arbitrates first) waits at most
+one piece: a row costs ~1,300 clocks (read the source, write the destination).
+
+**A wrong first version, caught on hardware.** The first cut captured the
+source row into the buffer at the SRT *read* (a true shift-register snapshot,
+~400 clocks a row) and streamed that at each write. On the Pocket the polygon
+seams came out a lighter colour and the game ran fast-forward. MAME's
+`hdgsp_write_to_shiftreg` stores a *pointer* to the source row and
+`hdgsp_read_from_shiftreg` memmoves its **current** contents at the write --
+which is what the word-by-word code had done, and what the game relies on: it
+modifies the source row between the transfer-in and the transfer-out, so a
+snapshot carries stale pixels (the seams) and stale GSP state. The SRT read now
+only latches the row address again and the write reads the row afresh before
+streaming it. The system-sim gates had not caught this: the title screen and
+the attract to frame 800 looked right, the SDRAM model saw no protocol error,
+and the GSP trace bench uses its own memory model. Lesson: when a change alters
+*what value* a consumer receives (not just when), gate it against MAME's
+picture of a scene that exercises the path -- here, the 3D tunnel.
 
 **Evidence.** Lint clean; 68k board bench 43,907 / 43,907 PCs; system attract
 run to 800 PASS with **0 SDRAM protocol errors** from the pin-level model

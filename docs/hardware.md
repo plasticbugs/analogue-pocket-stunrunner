@@ -147,6 +147,15 @@ type 3 (a controller with analog sticks)**: the Pocket's own controls put
 0x00 on the axis bytes, which without the type gate read as hard left and
 yoke fully down and pinned both axes regardless of the D-pad.
 
+**What the game makes of the yoke Y (verified in MAME, `tools/yoke_check.lua`).**
+`FUN_3cf8e` maps the raw ADC byte through a calibration record at ffdda6
+(+3 centre, +4 max, +10 min; centre 0x80, min/max *learned at run time* from the
+extremes seen) to a 0-31 value in ffdd84 (`FUN_3d29a`), centre -> 14-16. The level
+select (`FUN_2b1cc`) then picks `(ffdd84 - 14) / 6`: raw 0x80 -> Novice, 0xa8 -> 21
+-> Intermediate, 0xf0 -> 31 -> Advanced. So a **centred yoke is the game's lowest
+("lowered") position** and only raising it selects anything else -- identical with
+MAME's stick at rest. The Pocket's D-pad ramp idles at 0x80; nothing to centre.
+
 ### 2.4 ADC control (b80000, write)
 
 Bits 2:0 = ADC0809 channel, bit 3 = start conversion (the 0809 START/ALE

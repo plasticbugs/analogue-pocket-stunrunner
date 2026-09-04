@@ -55,6 +55,13 @@ emu.register_frame_done(function()
   if frames == coin_f + 10 then m.ioport.ports[":mainpcb:IN0"].fields["Coin 1"]:clear_value() end
   if frames == start_f then m.ioport.ports[":mainpcb:a80000"].fields["1 Player Start"]:set_value(1) end
   if frames == start_f + 10 then m.ioport.ports[":mainpcb:a80000"].fields["1 Player Start"]:clear_value() end
+  -- optional played level, same knobs as tools/trace_jsa.lua: RAISE_FRAME raises the
+  -- yoke (Y = 240) to pick a level, FIRE_FRAME presses the trigger, STICKX holds X from then
+  local raise_f, fire_f, stickx = tonumber(os.getenv("RAISE_FRAME") or "-1"), tonumber(os.getenv("FIRE_FRAME") or "-1"), tonumber(os.getenv("STICKX") or "-1")
+  if frames == raise_f then for k,_ in pairs(m.ioport.ports[":mainpcb:8BADC.2"].fields) do m.ioport.ports[":mainpcb:8BADC.2"].fields[k]:set_value(240) end end
+  if frames == fire_f then m.ioport.ports[":mainpcb:a80000"].fields["P1 Button 1"]:set_value(1) end
+  if frames == fire_f + 10 then m.ioport.ports[":mainpcb:a80000"].fields["P1 Button 1"]:clear_value() end
+  if frames == fire_f and stickx >= 0 then for k,_ in pairs(m.ioport.ports[":mainpcb:8BADC.0"].fields) do m.ioport.ports[":mainpcb:8BADC.0"].fields[k]:set_value(stickx) end end
   -- hold the stick up-left from frame START+120 to see the ship move
   if start_f > 0 and frames == start_f + 120 then m.ioport.ports[":mainpcb:8BADC.0"].fields["AD Stick X"]:set_value(0x40) end
   local last = 0
