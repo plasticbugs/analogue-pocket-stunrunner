@@ -9,21 +9,29 @@ OKI6295). All of it is gateware; nothing is emulated in software.
 > **ROMs are not included and never will be.** You supply your own MAME
 > `stunrun` romset; the core reads one image built from it.
 
-## Status
+## Status (0.1.0)
 
-Work in progress; nothing has run on a Pocket yet. Verified against MAME so
-far (details and numbers in `docs/verification.md`):
+Runs on the Pocket: boot, the attract sequence with its 3D demo, coin and
+Start, level select and gameplay with sound. Verified against MAME as the
+oracle (details and numbers in `docs/verification.md`):
 
-* reference frame renderer and the RTL scan-out path: pixel-identical on 7
-  frozen states (attract and gameplay)
-* 68010 board: 43,000 instructions from reset match MAME's trace, within 2 %
-  of real-time
-* JSA II sound board: YM2151 register stream identical over 40 s, audio
-  envelope within 0.01 dB
-* SDRAM controller: randomised multi-client bench, zero errors
+* all three CPU cores are instruction-trace-exact against MAME's debugger
+  traces (68010: 43,907 PCs from reset; TMS34010: 5.87 M instructions over six
+  windows with VRAM identical at each end; ADSP-2100: 28 M instructions with
+  every data-space access replayed)
+* JSA II sound board: YM2151 register stream identical to MAME's over a played
+  level, through the game's mid-level sound reset
+* title screen pixel-identical to MAME; the 68k/ADSP frame protocol matches
+  MAME's per-frame counts
 
-In progress: the TMS34010 and ADSP-2100 cores (trace-verified against MAME),
-whole-machine simulation, first Quartus build.
+Known differences from the arcade in this release:
+
+* the 3D scenes render at 15 frames per second where the arcade does 20 (the
+  graphics processor's frame takes four video frames instead of three); the
+  game's logic and speed are unaffected
+* the attract sequence runs about 2.5 seconds behind MAME's timeline
+* for a few seconds while the core loads, before the game clears its frame
+  buffer, the picture shows whatever the previous core left in memory
 
 ## Installing
 
