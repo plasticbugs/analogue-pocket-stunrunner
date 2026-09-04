@@ -297,9 +297,9 @@ behind, the flip frame's fill was still running when line 2 came round.
 Making the blit interruptible restores the display interrupt's latency to
 one row regardless of throughput; the lag itself is unchanged.
 
-Still open, and separate: the attract sequence runs ~147 frames late (MAME
-starts the demo at frame 559, we start at 705). That is throughput, not logic;
-this fix does not change it.
+Still open at the time of that fix, and separate: the attract sequence ran ~147
+frames late (MAME starts the demo at frame 559, we started at 705). That was
+throughput, not logic; see "The dead frame" below for what it turned out to be.
 
 ## The mid-level sound drone (fixed)
 
@@ -465,3 +465,25 @@ rows 12-27); the demo starts at frame 692 against 703 before. Per-frame 68k host
 waits at the demo start, host insertion only -> with burst SRT: worst single
 wait 21,850 -> 3,273 clocks (typically ~300), and the three-in-four frames that
 spent ~1 M clocks blocked now spend none. Quartus: see the synthesis row.
+
+**Boot lag, resolved by the same change.** The 68k's boot sequence is driven
+by the GSP's frame tick: `GspWaitIrq3` spins until the IRQ3 handler sets
+`ffdb48`; the GSP's boot loop raises INTOUT once per iteration, and the
+iteration is paced by a frame counter at GSP word FFF716A0 that its display
+interrupt increments each frame and the loop resets at 3 -- a 3-frame tick
+(`tools/trace_waitflag.lua`, `trace_intout.lua`, `trace_mailbox.lua`; MAME: 130
+ticks from frame 134 to 557, 126 of them exactly 3 frames apart). Every
+iteration includes a full-screen clear by shift-register transfer, so with the
+word-at-a-time SRT each tick stretched to 5-6 frames; the boot reached the
+title state at frame 670 against MAME's 531. With burst SRT rows the tick is 3
+frames again and the whole boot lines up 18 frames behind MAME (title 549 /
+551 / 558 -> 569 / 576 / 580 -> 597 for states 35 / 11 / 32 / 0c against 531 /
+551 / 558 / 580), the 18 being the ROM download and early self-test.
+`TB_DEMOSTATE` prints the wait flag; `TB_68KPROF` counts INTOUT and HSTCTL
+writes per frame. The 68k's ROM waits are 11-20 % of a frame (14-21 clocks per
+access) and were not the boot bottleneck.
+
+**Still open: the 3D frame rate.** In the demo the same loop ticks every 4
+frames in ours and every 3 in MAME (15 vs 20 rendered frames per second): the
+GSP's per-frame rendering exceeds the 3-frame budget. Each GSP memory access
+costs a `cen` wait plus the SDRAM latency; that is the next lever.

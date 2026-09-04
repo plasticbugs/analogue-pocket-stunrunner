@@ -604,12 +604,16 @@ int main(int argc, char **argv) {
             static int f0 = atoi(getenv("TB_68KPROF")); static int lastf = -1;
             static uint64_t iters = 0, feedw = 0, hostw = 0, c_wait = 0, c_feed = 0, c_som = 0, c_cam = 0, c_irq = 0, c_fb = 0, c_fe = 0, c_oth = 0, c_hst = 0;
             static bool in_feed = false;
-            static uint64_t hw_tot = 0, hw_n = 0, hw_max = 0, rw_tot = 0, rw_n = 0, rw_max = 0;
+            static uint64_t hw_tot = 0, hw_n = 0, hw_max = 0, rw_tot = 0, rw_n = 0, rw_max = 0, intout = 0, hstctlw = 0;
             uint32_t pc = top->dbg_68k_pc;
             bool feed = (pc >= 0x2274a && pc < 0x22954);
             if (feed && !in_feed) iters++;
             in_feed = feed;
             if (top->dbg_host_wr && top->dbg_host_addr == 2) { hostw++; if (feed) feedw++; }
+            // boot handshake: GSP writes of HSTCTLL with INTOUT (bit 7) set = its IRQ3 to the
+            // 68k; 68k writes to HSTCTL (host_addr 3). MAME: 1 and 34 per frame during boot.
+            if (top->dbg_gio_we && top->dbg_gio_addr == 15 && (top->dbg_gio_wdata & 0x80)) intout++;
+            if (top->dbg_host_wr && top->dbg_host_addr == 3) hstctlw++;
             if (top->dbg_host_wr && !top->dbg_host_ready) c_hst++;
             // 68k bus FSM parked in B_WAIT_GSP: clocks blocked on the host port,
             // number of accesses, and the longest single wait this frame
@@ -633,11 +637,11 @@ int main(int argc, char **argv) {
             else c_oth++;
             if (frame != lastf) {
                 if (lastf >= f0)
-                    printf("68kprof %4d: iters %4llu feedw %5llu hostw %5llu | kcyc wait %4llu feed %4llu som %4llu cam %3llu irq %3llu fb %3llu fe %3llu other %4llu hstall %4llu | hostwait kcyc %4llu n %5llu max %6llu | romwait kcyc %4llu n %6llu max %5llu\n",
+                    printf("68kprof %4d: iters %4llu feedw %5llu hostw %5llu | kcyc wait %4llu feed %4llu som %4llu cam %3llu irq %3llu fb %3llu fe %3llu other %4llu hstall %4llu | hostwait kcyc %4llu n %5llu max %6llu | romwait kcyc %4llu n %6llu max %5llu | intout %llu hstctl_w %llu\n",
                            lastf, (unsigned long long)iters, (unsigned long long)feedw, (unsigned long long)hostw,
                            (unsigned long long)(c_wait / 1000), (unsigned long long)(c_feed / 1000), (unsigned long long)(c_som / 1000), (unsigned long long)(c_cam / 1000),
-                           (unsigned long long)(c_irq / 1000), (unsigned long long)(c_fb / 1000), (unsigned long long)(c_fe / 1000), (unsigned long long)(c_oth / 1000), (unsigned long long)(c_hst / 1000), (unsigned long long)(hw_tot / 1000), (unsigned long long)hw_n, (unsigned long long)hw_max, (unsigned long long)(rw_tot / 1000), (unsigned long long)rw_n, (unsigned long long)rw_max);
-                iters = feedw = hostw = c_wait = c_feed = c_som = c_cam = c_irq = c_fb = c_fe = c_oth = c_hst = 0;
+                           (unsigned long long)(c_irq / 1000), (unsigned long long)(c_fb / 1000), (unsigned long long)(c_fe / 1000), (unsigned long long)(c_oth / 1000), (unsigned long long)(c_hst / 1000), (unsigned long long)(hw_tot / 1000), (unsigned long long)hw_n, (unsigned long long)hw_max, (unsigned long long)(rw_tot / 1000), (unsigned long long)rw_n, (unsigned long long)rw_max, (unsigned long long)intout, (unsigned long long)hstctlw);
+                iters = feedw = hostw = c_wait = c_feed = c_som = c_cam = c_irq = c_fb = c_fe = c_oth = c_hst = 0; intout = hstctlw = 0;
                 lastf = frame;
             }
         }
@@ -652,11 +656,20 @@ int main(int argc, char **argv) {
                 auto &w = top->rootp->vlSymsp->TOP__tb_system_top__core.__PVT__main__DOT__wram;
                 auto rd16 = [&](uint32_t a) -> uint16_t { return w[(a & 0x7fff) >> 1]; };
                 auto rd32 = [&](uint32_t a) -> uint32_t { return ((uint32_t)rd16(a) << 16) | rd16(a + 2); };
-                printf("demo %4d: state %02x sect %2d node %08x dist %5d bd %02x/%02x feed %08x\n", frame,
+                printf("demo %4d: state %02x sect %2d node %08x dist %5d bd %02x/%02x feed %08x wait %04x\n", frame,
                        rd16(0xff9550), rd16(0xff9578), rd32(0xffdbee), (int16_t)rd16(0xffdbfe),
-                       rd16(0xff9bcc) & 0xff, rd16(0xff9bce) & 0xff, rd32(0xff9bd0));
+                       rd16(0xff9bcc) & 0xff, rd16(0xff9bce) & 0xff, rd32(0xff9bd0), rd16(0xffdb48));
                 lastf = frame;
             }
+        }
+        // TB_MBLOG=F0: every GSP memory write to the boot loop's frame counter at
+        // GSP bit address FFF716A0 (word FFF716A) for frames F0..F0+39, with the
+        // scan line, plus DI pending/enabled -- MAME: the DI handler (fff41fc0)
+        // writes 1,2,3 at line 2 on consecutive frames and the main loop resets it.
+        if (getenv("TB_MBLOG")) {
+            static int f0 = atoi(getenv("TB_MBLOG"));
+            if (frame >= f0 && frame < f0 + 40 && top->dbg_gmem_req && top->dbg_gmem_we && top->dbg_gmem_ack && top->dbg_gmem_addr == 0x0FFF716A)
+                printf("mblog %4d vc %3d: write %04x (gsp pc %08x, INTPEND %04x INTENB %04x)\n", frame, top->dbg_gsp_vc, top->dbg_gmem_wdata, top->dbg_gsp_pc, top->dbg_gsp_intpend, top->dbg_gsp_intenb);
         }
         // TB_SNDFINE=F0: per FRAME sound-board activity for frames F0..F0+199:
         // 68k command writes and the 6502's reads of that latch (a write not
