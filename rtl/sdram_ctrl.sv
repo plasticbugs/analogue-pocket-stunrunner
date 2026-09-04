@@ -57,7 +57,14 @@ module sdram_ctrl #(
     output logic        b_wr,         // one word delivered
     output logic  [9:0] b_idx,        // its index (0..b_len-1)
     output logic [15:0] b_data,
-    output logic        b_done        // pulse; b_req may drop
+    output logic        b_done,       // pulse; b_req may drop
+    // burst writes (GSP shift-register-transfer rows): b_we with b_req selects
+    // a run of WRITEs in the open row, one every 2 clocks; the client presents
+    // b_wdata for word b_widx (its own index of the next word to issue), which
+    // the 2-clock spacing gives a registered RAM read time to settle
+    input  logic        b_we,
+    input  logic [15:0] b_wdata,
+    output logic  [9:0] b_widx
 );
     localparam BURST_CHUNK = 10'd32;
 
@@ -120,7 +127,9 @@ module sdram_ctrl #(
     logic  [5:0] b_chunk;        // words issued in this chunk
     logic        b_yield;        // after a chunk, let one random client in
     logic        b_accepted;     // b_req latched; cleared when it drops
+    logic        b_is_we;        // this burst is a write
     logic  [2:0] b_gap;
+    assign b_widx = b_issued;
 
     // any random client pending? Round-robin: the first pending client after
     // the one served last, so a saturating client cannot starve the others.
@@ -218,8 +227,6 @@ module sdram_ctrl #(
                 end
                 else if (b_start && b_active) begin
                     // (re)open the row for the next chunk
-                    SDRAM_A  <= b_next[22:10];
-                    SDRAM_BA <= b_next[24:23];
                     command  <= CMD_ACTIVE;
                     b_chunk  <= '0;
                     b_gap    <= '0;
@@ -230,6 +237,16 @@ module sdram_ctrl #(
                     last      <= pick;
                     b_yield   <= 1'b0;
                     state     <= S_ARB;
+                end
+                // The burst row address is loaded outside the priority chain:
+                // AUTO REFRESH ignores the address pins and nothing else drives
+                // SDRAM_A in S_IDLE, so whether the refresh branch wins this
+                // clock need not be in SDRAM_A's cone (refresh_due -> SDRAM_A[10]
+                // missed setup by 0.07 ns on one placement). If the refresh does
+                // win, the row is simply loaded again when the burst reopens.
+                if (b_start && b_active) begin
+                    SDRAM_A  <= b_next[22:10];
+                    SDRAM_BA <= b_next[24:23];
                 end
             end
 
@@ -279,9 +296,15 @@ module sdram_ctrl #(
             S_BREAD: begin
                 // issue a READ (no auto precharge) every 2 or 5 clocks
                 if (b_gap == 3'd0) begin
-                    command <= CMD_READ;
                     SDRAM_A <= {4'b0000, b_next[9:1]};
-                    cap[rd_late ? 4 : 3] <= {1'b1, 1'b1, 3'd0, b_issued};
+                    if (b_is_we) begin
+                        command <= CMD_WRITE;             // DQM = 00: both bytes
+                        dq_out  <= b_wdata;
+                        dq_oe   <= 1'b1;
+                    end else begin
+                        command <= CMD_READ;
+                        cap[rd_late ? 4 : 3] <= {1'b1, 1'b1, 3'd0, b_issued};
+                    end
                     b_next   <= b_next + 24'd1;
                     b_issued <= b_issued + 10'd1;
                     b_remain <= b_remain - 10'd1;
@@ -315,6 +338,7 @@ module sdram_ctrl #(
         // accept a burst request (served from the next idle slot)
         if (b_req && !b_active && !b_done && !b_accepted) begin
             b_active <= 1'b1; b_accepted <= 1'b1;
+            b_is_we  <= b_we;
             b_next   <= b_addr;
             b_remain <= b_len;
             b_issued <= '0;

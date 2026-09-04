@@ -410,4 +410,58 @@ new completion state `S_HW1` that hands the word back, post-increments HSTADR
 as `S_HOST1` does and resumes the interrupted core access; the `S_CHECK` path
 stays for the halted/idle case. GSP trace bench: all six windows PASS with
 VRAM identical (1,860,171 / 88,534 / 3,917,724 / 116,034 / 809 / 725,630
-instructions). System result: see below.
+instructions). **System result** (`TB_DEMOSTATE` attract run with the
+insertion): the request still comes at frame 1800 (the demo's pace is set by the
+GSP, see the next section) but the stream is now fed from 1802 and complete by
+1913 -- ~110 frames against MAME's 97 -- before the horizon opens; the longest
+single host wait fell from 1.2 M clocks (a whole frame) to ~22 k. Confirmed on the
+Pocket: the band is gone.
+
+**What is left.** Three frames in four the 68k still spends most of the frame
+blocked on the host port, ~60 us per access. `TB_HOSTDIAG` (the GSP's state at
+every wait over 2,000 clocks): all 240 were the GSP in `S_W1`, i.e. waiting for
+its own memory access to be acknowledged, inside `FILL L` at fff43200 (and a few
+at fff44130) -- the full-screen clear that owns the "dead" frame of the GSP's
+4-frame cycle. The clear uses VRAM shift-register transfers: one SRT read, then
+one write per row; `gsp_bus` implemented an SRT write by copying its 256-word row
+(1,024 in the 2bpp expander region) through the random SDRAM port a word at a time
+-- a read and a 7-clock write per word, ~5,000 clocks per row (~21,000 for an
+expander row: the measured maximum), so a 240-row clear cost ~1.2 M clocks, most
+of a frame, with the GSP frozen inside one instruction where no host access can be
+inserted. The real chip does a row transfer in one memory cycle. See the next
+section for the burst-write rewrite.
+
+## The dead frame: shift-register transfers through the random port (fixed)
+
+The GSP's 4-frame cycle had one frame in which it executed ~400 instructions:
+it was inside a single `FILL L` (the screen clear at fff43200) whose memory
+accesses each waited thousands of clocks. `TB_HOSTDIAG` caught all 240 long
+68k host-port waits in that state (`S_W1`, waiting for `mem_ack`).
+
+**Mechanism.** The clear is done with VRAM shift-register transfers: one SRT
+read to capture a row of the fill colour, then one SRT write per screen row.
+`gsp_bus` implemented an SRT write by copying the 256-word row (1,024 words in
+the 2bpp expander region) through the SDRAM random port a word at a time -- a
+read and a 7-clock auto-precharge write per word, ~5,000 clocks per row and
+~21,000 per expander row, the two measured maxima. 240 rows = ~1.2 M clocks,
+three quarters of a frame, with the GSP frozen in one instruction (so no host
+access could be inserted either). The real chip transfers a row in one memory
+cycle; MAME's `hdgsp_shiftreg` is a memcpy.
+
+**Fix.** `sdram_ctrl` gained burst writes on its burst port (`b_we`,
+`b_wdata`, `b_widx`: one WRITE per 2 clocks in the open row, DQM both bytes,
+precharge 2 clocks after the last write). `gsp_bus` captures the source row
+into a 1,024 x 16 row buffer -- the VRAM shift register, so a later change to
+the source row no longer leaks into the transfer -- at the SRT read, and
+streams it into the destination at the SRT write, both as 32-word burst
+pieces with a one-clock gap so the display line fetch (which `stunrun_core`
+now arbitrates first) waits at most one piece. A row now costs ~400 clocks.
+
+**Evidence.** Lint clean; 68k board bench 43,907 / 43,907 PCs; system attract
+run to 800 PASS with **0 SDRAM protocol errors** from the pin-level model
+(which checks writes against open rows); title screen at frame 300 renders
+correctly (differences from MAME's frame 300 confined to a blinking text line,
+rows 12-27); the demo starts at frame 692 against 703 before. Per-frame 68k host
+waits at the demo start, host insertion only -> with burst SRT: worst single
+wait 21,850 -> 3,273 clocks (typically ~300), and the three-in-four frames that
+spent ~1 M clocks blocked now spend none. Quartus: see the synthesis row.

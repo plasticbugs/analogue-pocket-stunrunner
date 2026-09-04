@@ -89,9 +89,33 @@ module stunrun_core #(
     logic        c_ack   [6];
     logic [15:0] sd_rdata;
     logic [24:1] b_addr;
-    logic  [9:0] b_len, b_idx;
-    logic        b_req, b_wr, b_done;
-    logic [15:0] b_data;
+    logic  [9:0] b_len, b_idx, b_widx;
+    logic        b_req, b_wr, b_done, b_we;
+    logic [15:0] b_data, b_wdata;
+    // Burst port arbiter: the display line fetch (vb_*) first, the GSP bus's
+    // shift-register rows (sb_*) otherwise; a grant lasts one request, and the
+    // GSP side asks in 32-word pieces so the display waits at most one piece.
+    logic [24:1] vb_addr, sb_addr;
+    logic  [9:0] vb_len, sb_len;
+    logic        vb_req, sb_req, sb_we, vb_wr, sb_wr, vb_done, sb_done;
+    logic [15:0] sb_wdata;
+    logic        bsel, bbusy;
+    always_ff @(posedge clk) begin
+        if (mreset) begin bbusy <= 1'b0; bsel <= 1'b0; end
+        else if (!bbusy) begin
+            if (vb_req)      begin bbusy <= 1'b1; bsel <= 1'b0; end
+            else if (sb_req) begin bbusy <= 1'b1; bsel <= 1'b1; end
+        end else if (b_done) bbusy <= 1'b0;
+    end
+    assign b_req   = bbusy && (bsel ? sb_req : vb_req);
+    assign b_addr  = bsel ? sb_addr : vb_addr;
+    assign b_len   = bsel ? sb_len  : vb_len;
+    assign b_we    = bsel && sb_we;
+    assign b_wdata = sb_wdata;
+    assign vb_wr   = b_wr   && !bsel;
+    assign sb_wr   = b_wr   &&  bsel;
+    assign vb_done = b_done && !bsel;
+    assign sb_done = b_done &&  bsel;
 
     sdram_ctrl sdram (
         .clk(clk), .clk_pin(clk_sdram), .init(hw_reset), .rd_late(rd_late), .burst_slow(burst_slow), .ready(sd_ready),
@@ -99,7 +123,8 @@ module stunrun_core #(
         .SDRAM_nCS(dram_cs_n), .SDRAM_nWE(dram_we_n), .SDRAM_nRAS(dram_ras_n), .SDRAM_nCAS(dram_cas_n),
         .SDRAM_CKE(dram_cke), .SDRAM_CLK(dram_clk),
         .c_addr(c_addr), .c_req(c_req), .c_we(c_we), .c_wdata(c_wdata), .c_be(c_be), .c_ack(c_ack), .rdata(sd_rdata),
-        .b_addr(b_addr), .b_len(b_len), .b_req(b_req), .b_wr(b_wr), .b_idx(b_idx), .b_data(b_data), .b_done(b_done)
+        .b_addr(b_addr), .b_len(b_len), .b_req(b_req), .b_wr(b_wr), .b_idx(b_idx), .b_data(b_data), .b_done(b_done),
+        .b_we(b_we), .b_wdata(b_wdata), .b_widx(b_widx)
     );
 
     // ------------------------------------------------------------------------
@@ -232,6 +257,8 @@ module stunrun_core #(
         .mem_rdata(gmem_rdata), .mem_ack(gmem_ack), .mem_srt(gmem_srt),
         .sd_addr(c_addr[0]), .sd_req(c_req[0]), .sd_we(c_we[0]), .sd_wdata(c_wdata[0]), .sd_be(c_be[0]),
         .sd_rdata(sd_rdata), .sd_ack(c_ack[0]),
+        .sb_addr(sb_addr), .sb_len(sb_len), .sb_req(sb_req), .sb_we(sb_we), .sb_wdata(sb_wdata),
+        .sb_wr(sb_wr), .sb_idx(b_idx), .sb_data(b_data), .sb_done(sb_done), .sb_widx(b_widx),
         .finescroll(finescroll), .palbank(palbank),
         .pal_we_rg(pal_we_rg), .pal_we_b(pal_we_b), .pal_waddr(pal_waddr), .pal_wdata(pal_wdata),
         .vram_copied(gsp_cache_flush)
@@ -245,7 +272,7 @@ module stunrun_core #(
         .r_dpyctl(r_dpyctl), .r_dpystrt(r_dpystrt), .r_dpytap(r_dpytap), .r_dpyadr(r_dpyadr),
         .finescroll(finescroll), .palbank(palbank), .display_on(r_dpyctl[15]),
         .pal_we_rg(pal_we_rg), .pal_we_b(pal_we_b), .pal_waddr(pal_waddr), .pal_wdata(pal_wdata),
-        .b_addr(b_addr), .b_len(b_len), .b_req(b_req), .b_wr(b_wr), .b_idx(b_idx), .b_data(b_data), .b_done(b_done),
+        .b_addr(vb_addr), .b_len(vb_len), .b_req(vb_req), .b_wr(vb_wr), .b_idx(b_idx), .b_data(b_data), .b_done(vb_done),
         .r(v_r), .g(v_g), .b(v_b), .hsync(hsync), .vsync(vsync), .hblank(v_hblank), .vblank(v_vblank), .de(de),
         .dbg_line_late(line_late_p)
     );

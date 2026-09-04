@@ -465,6 +465,22 @@ set ADSP_SHCAP [get_registers {*|adsp2100:*|sh_sb[*] *|adsp2100:*|sh_se[*] *|ads
 set_multicycle_path -setup 2 -from [get_registers {*|adsp2100:*|astat[*]}] -to $ADSP_SHCAP
 set_multicycle_path -hold  1 -from [get_registers {*|adsp2100:*|astat[*]}] -to $ADSP_SHCAP
 
+# Status registers as register-move sources -> the DAG files (Ix/Mx/Lx = ASTAT,
+# SSTAT, MSTAT, IMASK, ICNTL). The DAG files are written ONLY by the WRITE_REG12
+# expansion in S_WB (audited above for cntr), which reads the move source
+# directly. Write sites of the sources, each checked mechanically: astat -- the
+# S_WB flag writes, WRITE_REG0 in S_WB, STAT_POP, reset; mstat/icntl -- WRITE_REG0
+# in S_WB, reset; imask -- WRITE_REG0 in S_WB, the S_IDLE interrupt-entry mask
+# update, reset; sstat -- the stack push/pop expansions (S_IDLE irq push, S_ISSUE
+# loop-end pop, S_WB call/ret and register-move push/pop), the DO UNTIL push,
+# reset; px -- WRITE_REG3 in S_WB, the S_WB PM-data-read byte, reset. Nearest
+# pairing: an S_ISSUE sstat write read by the same instruction's S_WB, 2 clocks
+# later (S_MEM between); everything else is >= 5. 2/1.
+# Failed by -0.549 ns (slow 85 C) on the burst-SRT build's placement without it.
+set ADSP_STAT [get_registers {*|adsp2100:*|astat[*] *|adsp2100:*|sstat[*] *|adsp2100:*|mstat[*] *|adsp2100:*|imask[*] *|adsp2100:*|icntl[*] *|adsp2100:*|px[*]}]
+set_multicycle_path -setup 2 -from $ADSP_STAT -to $ADSP_DAG
+set_multicycle_path -hold  1 -from $ADSP_STAT -to $ADSP_DAG
+
 set ADSP_SP [get_registers {*|adsp2100:*|pc_sp[*] *|adsp2100:*|loop_sp[*] *|adsp2100:*|cntr_sp[*] *|adsp2100:*|stat_sp[*]}]
 set_multicycle_path -setup 2 -from $ADSP_SP -to [get_registers {*|adsp2100:*|*}]
 set_multicycle_path -hold  1 -from $ADSP_SP -to [get_registers {*|adsp2100:*|*}]
