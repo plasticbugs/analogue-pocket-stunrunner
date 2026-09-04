@@ -536,9 +536,22 @@ cleared rows, and the arm drawn earlier in that frame is gone from part of the
 box for one rendered frame. The copy costs ~50 clocks a word (~12 ms), so the
 DI lands inside it often during this animation.
 
-**Fix (planned).** A burst fast path in the blit engine for 8-bpp replace,
-non-transparent row copies and fills -- read the source row into the row
-buffer with a burst, write it with a burst, as the SRT rows already do -- so
-such a copy takes ~0.5 ms and effectively never straddles a display interrupt;
-it would also lift the 3D rate to MAME's 3-frame cadence. Reverting the
-between-row interruption is not an option (late DI = the level-select flicker).
+**Fix (9720ae8, on the throughput branch).** Two parts. (1) A row fast path:
+an 8-bpp replace row -- copy or fill, transparency on zero included (the
+tally box is copied with T=1 so the arm shows through its black), at least 16
+pixels, both ends in VRAM -- is handed to `gsp_bus` as one row command; the
+source span is burst-read into the row buffer with the byte shift applied as
+the words arrive, then burst-written with first/last and per-byte enables
+(`sdram_ctrl`'s burst writes now take byte enables). About 2 clocks a word
+against ~50. (2) Blits that take the fast path run atomically: no between-row
+interruption, so a display interrupt arriving during one lands after all its
+pixels, exactly MAME's order (its blit writes everything, then eats its cycles
+with P set; the interrupt lands in that span and the register writeback after
+the handler). The GSP bench models the forced mid-blit interrupt the same way
+now -- rows first, interrupt with P set and the PC backed up, writeback on the
+re-execution -- which is also MAME's order for the traced registers (the w7
+lesson). Slow-path blits (2-bpp expander fills, PPOP, binary text) keep the
+between-row interruption. GSP trace bench: all nine windows PASS (the 3D
+window runs 4,224 rows through the fast path); the repair window, which failed
+by 2,113 VRAM words, passes with 5,180 fast rows, as do its 5033 and 5047
+sub-windows. Hardware confirmation pending.
