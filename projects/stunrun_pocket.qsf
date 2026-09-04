@@ -30,7 +30,7 @@ set_global_assignment -name SMART_RECOMPILE OFF
 # ==============================================================================
 set_global_assignment -name ADV_NETLIST_OPT_SYNTH_WYSIWYG_REMAP ON
 set_global_assignment -name ALLOW_POWER_UP_DONT_CARE ON
-set_global_assignment -name MUX_RESTRUCTURE OFF
+set_global_assignment -name MUX_RESTRUCTURE ON
 set_global_assignment -name OPTIMIZATION_TECHNIQUE AREA
 # The binding constraint is LAB packing, not raw ALM count (ALMs fit at
 # 18,454/18,480 while the fitter still wanted 1,860 of 1,848 LABs), so pack
@@ -55,7 +55,7 @@ set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
 set_global_assignment -name PERIPHERY_TO_CORE_PLACEMENT_AND_ROUTING_OPTIMIZATION ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_ASYNCHRONOUS_SIGNAL_PIPELINING ON
 set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
-set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION OFF
 set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
 set_global_assignment -name ROUTER_CLOCKING_TOPOLOGY_ANALYSIS ON
 set_global_assignment -name ROUTER_LCELL_INSERTION_AND_LOGIC_DUPLICATION ON
