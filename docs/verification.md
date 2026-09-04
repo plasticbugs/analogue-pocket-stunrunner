@@ -469,9 +469,13 @@ streaming it. **Confirmed on the Pocket 2026-09-04: no seams, and the 3D
 scenes at the arcade's 20 frames per second.** The system-sim gates had not
 caught the first version: the title screen and
 the attract to frame 800 looked right, the SDRAM model saw no protocol error,
-and the GSP trace bench uses its own memory model. Lesson: when a change alters
-*what value* a consumer receives (not just when), gate it against MAME's
-picture of a scene that exercises the path -- here, the 3D tunnel.
+and the GSP trace bench uses its own memory model. Afterwards, the two
+versions run side by side over attract frames 720-900 (snapshots every 20)
+differ in one frame of nine, by 41 pixels -- the sim does reproduce the
+stale-copy semantics, but a coarse sampling of one scene can miss it. Lesson:
+when a change alters *what value* a consumer receives (not just when), gate it
+against MAME's picture of a scene that exercises the path -- here, the 3D
+tunnel -- with dense sampling.
 
 **Evidence.** Lint clean; 68k board bench 43,907 / 43,907 PCs; system attract
 run to 800 PASS with **0 SDRAM protocol errors** from the pin-level model
