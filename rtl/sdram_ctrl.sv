@@ -64,6 +64,7 @@ module sdram_ctrl #(
     // the 2-clock spacing gives a registered RAM read time to settle
     input  logic        b_we,
     input  logic [15:0] b_wdata,
+    input  logic  [1:0] b_be,         // byte enables for word b_widx (writes)
     output logic  [9:0] b_widx
 );
     localparam BURST_CHUNK = 10'd32;
@@ -296,9 +297,9 @@ module sdram_ctrl #(
             S_BREAD: begin
                 // issue a READ (no auto precharge) every 2 or 5 clocks
                 if (b_gap == 3'd0) begin
-                    SDRAM_A <= {4'b0000, b_next[9:1]};
+                    SDRAM_A <= {b_is_we ? ~b_be : 2'b00, 2'b00, b_next[9:1]};   // A12:11 = DQM
                     if (b_is_we) begin
-                        command <= CMD_WRITE;             // DQM = 00: both bytes
+                        command <= CMD_WRITE;
                         dq_out  <= b_wdata;
                         dq_oe   <= 1'b1;
                     end else begin

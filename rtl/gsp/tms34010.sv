@@ -69,6 +69,16 @@ module tms34010 (
     input  logic        dbg_force_int,  // bench: take the pending interrupt at the next boundary (aborts a fetch in progress)
     input  logic        dbg_int_pending,// bench: MAME had an interrupt pending here, so blits must defer as the hardware does
     input  logic        dbg_hold,       // bench: park at the instruction boundary (host accesses still serviced)
+    // Row fast path (gsp_bus): a whole 8-bpp replace row -- copy or fill --
+    // moved through the row buffer and the SDRAM burst port instead of one
+    // read-modify-write word at a time. rc_req holds until rc_ack.
+    output logic        rc_req,
+    output logic        rc_fill,
+    output logic [31:0] rc_src, rc_dst,     // bit addresses of the row's first pixel
+    output logic [15:0] rc_len,             // pixels
+    output logic [15:0] rc_color,
+    output logic        rc_transp,          // skip zero source pixels (CONTROL T)
+    input  logic        rc_ack,
     output logic        dbg_idle        // bench: parked at the boundary with nothing pending
 );
 
@@ -477,7 +487,7 @@ module tms34010 (
         S_XY0, S_XY1, S_XY2,
         S_MUL1, S_MUL2, S_MUL3, S_DIV0, S_DIV1, S_DIV2,
         S_BLT0, S_BLT1, S_BLT1B, S_BLT1C, S_BLT1D, S_BLT2, S_BLT2B, S_BLT2C, S_BLT2D, S_BLT2E,
-        S_BLT_ROW, S_BLT_ROWB, S_BLT_ROWC, S_BLT_SRC0, S_BLT_SRC0W, S_BLT_SRC0X, S_BLT_DST0, S_BLT_DST0W,
+        S_BLT_ROW, S_BLT_ROWB, S_BLT_ROWC, S_BLT_RC, S_BLT_SRC0, S_BLT_SRC0W, S_BLT_SRC0X, S_BLT_DST0, S_BLT_DST0W,
         S_BLT_PIX, S_BLT_SRCNW, S_BLT_SRCNX, S_BLT_DSTN, S_BLT_DSTNW, S_BLT_PIX1, S_BLT_PIX2, S_BLT_WRW,
         S_BLT_FLUSH, S_BLT_FLUSHR, S_BLT_NEXTROW, S_BLT_END, S_BLT_END2, S_BLT_END3, S_BLT_END3B, S_BLT_END4, S_BLT_END4B, S_BLT_END5
     } state_t;
@@ -738,6 +748,22 @@ module tms34010 (
     // display interrupt off for ~90 scan lines: the DI handler's DPYADR write
     // then tore the picture.
     logic        blt_int_wb;
+    // MAME's blit is atomic: its VRAM writes all land before an interrupt
+    // that arrives during the blit's cycles, and the register writeback lands
+    // after the handler (the continuation). Eligible (fast) blits do the same
+    // here: no between-row interruption. The bench's forced mid-blit interrupt
+    // (dbg_int_pending at issue) is modelled exactly: blt_defer runs the rows
+    // first, blt_forced_after then takes the interrupt with P set and the PC
+    // backed up, and the re-execution (blt_rows_done) performs only the
+    // writeback.
+    logic        blt_defer, blt_forced_after, blt_rows_done;
+    // A row qualifies for the fast path when every pixel is an unconditional
+    // 8-bit replace (no PPOP, no binary expand, no shift-register mode;
+    // transparency on zero becomes per-byte write enables), it is at least 16 pixels, and both ends are in
+    // VRAM. Everything else takes the per-pixel loop below.
+    wire blt_fast_ok = (psz == 5'd8) && !blt_mode_b && !srt_mode && !rop_en && !blt_req_src
+                       && (blt_mode_fill || blt_sbpp == 5'd8) && (blt_dx >= 16'd16)
+                       && (blt_drow[31:23] == 9'h1ff) && (blt_mode_fill || blt_srow[31:23] == 9'h1ff);
     logic [15:0] blt_done;
     // rows the writeback advances by: the whole blit normally; on an interrupt
     // the rows completed, or none for y-reversed operands (their remaining rows
@@ -894,6 +920,7 @@ module tms34010 (
             for (int i = 0; i < 32; i++) io[i] <= 16'h0;
             io[R_HSTCTLH] <= 16'h8000;          // halt on reset (/HCS)
             st <= 32'h0000_0010; blt_int_wb <= 1'b0;
+            rc_req <= 1'b0; blt_defer <= 1'b0; blt_forced_after <= 1'b0; blt_rows_done <= 1'b0;
             pc <= 32'h0;
             reset_deferred <= 1'b1;
             istep <= 4'd0;
@@ -1472,7 +1499,22 @@ module tms34010 (
                 blt_drow <= blt_drow + sh_r;
                 state <= S_BLT_ROW;
             end
-            S_BLT_ROW: begin
+            S_BLT_ROW: if (blt_rows_done) begin
+                // re-executed after the handler: the pixels are already there
+                blt_rows_done <= 1'b0;
+                state <= S_BLT_END;
+            end else if (blt_fast_ok) begin
+                if (blt_defer) begin blt_defer <= 1'b0; blt_forced_after <= 1'b1; end
+                rc_req   <= 1'b1;
+                rc_fill  <= blt_mode_fill;
+                rc_src   <= blt_srow;
+                rc_dst   <= blt_drow;
+                rc_len   <= blt_dx;
+                rc_color <= B_COLOR1[15:0];
+                rc_transp <= transp;
+                state    <= S_BLT_RC;
+            end else begin
+                if (blt_defer) begin blt_defer <= 1'b0; blt_forced_after <= 1'b1; end
                 blt_swa  <= blt_srow[31:4];
                 blt_dwa  <= blt_drow[31:4];
                 blt_sbit <= {1'b0, blt_srow[3:0]};
@@ -1481,6 +1523,10 @@ module tms34010 (
                 blt_dword <= 32'd0;
                 sh_x <= {16'h0, pm}; sh_k <= {1'b0, blt_drow[3:0]}; sh_mode <= SH_SHL;   // initial dest mask
                 state <= S_BLT_ROWB;
+            end
+            S_BLT_RC: if (rc_ack) begin
+                rc_req <= 1'b0;
+                state  <= S_BLT_NEXTROW;
             end
             S_BLT_ROWB: if (!mph) mph <= 1'b1; else begin
                 mph <= 1'b0;
@@ -1652,7 +1698,7 @@ module tms34010 (
                     // those are honoured at the blit's issue point alone. In the
                     // system dbg_int_inhibit and dbg_int_pending are tied off.
                     if ((nmi_pend || (st[SB_IE] && ((io[R_INTPEND] & io[R_INTENB] & 16'h0e00) != 16'h0)))
-                        && !dbg_int_inhibit) begin
+                        && !dbg_int_inhibit && !blt_fast_ok) begin
                         // take the interrupt between rows: write the progress into
                         // DADDR/SADDR/DYDX via the end-of-blit sequence, keep P
                         blt_int_wb <= 1'b1;
@@ -1661,7 +1707,14 @@ module tms34010 (
                     end else state <= S_BLT_ROW;
                 end
             end
-            S_BLT_END: begin
+            S_BLT_END: if (blt_forced_after) begin
+                // all rows written; take the pending interrupt with P set and the
+                // PC backed up, the writeback happens when the instruction re-executes
+                blt_forced_after <= 1'b0;
+                blt_rows_done <= 1'b1;
+                pc <= pc - 32'h10;
+                state <= S_CHECK;
+            end else begin
                 if (!blt_int_wb) st[SB_P] <= 1'b0;                          // an interrupted blit keeps P
                 mul_a <= $signed({{17{blt_wb_rows[15]}}, blt_wb_rows});      // rows to advance by (sign-extended)
                 mul_b <= $signed({B_DPTCH[31], B_DPTCH});
@@ -2177,18 +2230,18 @@ module tms34010 (
                         // window mode 1: second write (DYDX), then WV interrupt request
                         rfw_en = 1'b1; rfw_idx = 5'd23; rfw_val = {blt_dy, blt_dx};
                         io[R_INTPEND] <= io[R_INTPEND] | INT_WV;
-                    end else if (!st[SB_P] && int_ready && (!dbg_int_inhibit || dbg_int_pending)) begin
-                        // An interrupt is pending and this operation has not
+                    end else if (!st[SB_P] && int_ready && !dbg_int_inhibit) begin
+                        // A real interrupt is pending and this operation has not
                         // touched anything yet. The 34010 takes it here, sets P
                         // and re-executes the instruction afterwards -- SADDR,
-                        // DADDR and DYDX are left exactly as they were. Running
-                        // the blit to completion first and taking the interrupt
-                        // after leaves DADDR advanced by DYDX.y, which is what
-                        // diverged from MAME on the attract demo (w7).
+                        // DADDR and DYDX are left exactly as they were.
                         st[SB_P] <= 1'b1;
                         pc <= pc - 32'h10;          // re-execute this instruction
                         state <= S_CHECK;
                     end else begin
+                        // Bench: MAME took an interrupt during this blit's cycles.
+                        // Its pixels were already written; its registers not yet.
+                        if (!st[SB_P] && dbg_int_pending && dbg_int_inhibit) blt_defer <= 1'b1;
                         // P set here means the handler has returned: clear it and
                         // run the operation, which resumes from whatever SADDR /
                         // DADDR / DYDX now hold.

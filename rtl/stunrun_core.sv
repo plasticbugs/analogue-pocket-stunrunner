@@ -91,6 +91,7 @@ module stunrun_core #(
     logic [24:1] b_addr;
     logic  [9:0] b_len, b_idx, b_widx;
     logic        b_req, b_wr, b_done, b_we;
+    logic  [1:0] b_be;
     logic [15:0] b_data, b_wdata;
     // Burst port arbiter: the display line fetch (vb_*) first, the GSP bus's
     // shift-register rows (sb_*) otherwise; a grant lasts one request, and the
@@ -99,7 +100,12 @@ module stunrun_core #(
     logic  [9:0] vb_len, sb_len;
     logic        vb_req, sb_req, sb_we, vb_wr, sb_wr, vb_done, sb_done;
     logic [15:0] sb_wdata;
+    logic  [1:0] sb_be;
     logic        bsel, bbusy;
+    // row fast path between the GSP core and the memory glue
+    logic        rc_req, rc_fill, rc_transp, rc_ack;
+    logic [31:0] rc_src, rc_dst;
+    logic [15:0] rc_len, rc_color;
     always_ff @(posedge clk) begin
         if (mreset) begin bbusy <= 1'b0; bsel <= 1'b0; end
         else if (!bbusy) begin
@@ -112,6 +118,7 @@ module stunrun_core #(
     assign b_len   = bsel ? sb_len  : vb_len;
     assign b_we    = bsel && sb_we;
     assign b_wdata = sb_wdata;
+    assign b_be    = sb_be;
     assign vb_wr   = b_wr   && !bsel;
     assign sb_wr   = b_wr   &&  bsel;
     assign vb_done = b_done && !bsel;
@@ -124,7 +131,7 @@ module stunrun_core #(
         .SDRAM_CKE(dram_cke), .SDRAM_CLK(dram_clk),
         .c_addr(c_addr), .c_req(c_req), .c_we(c_we), .c_wdata(c_wdata), .c_be(c_be), .c_ack(c_ack), .rdata(sd_rdata),
         .b_addr(b_addr), .b_len(b_len), .b_req(b_req), .b_wr(b_wr), .b_idx(b_idx), .b_data(b_data), .b_done(b_done),
-        .b_we(b_we), .b_wdata(b_wdata), .b_widx(b_widx)
+        .b_we(b_we), .b_wdata(b_wdata), .b_be(b_be), .b_widx(b_widx)
     );
 
     // ------------------------------------------------------------------------
@@ -248,7 +255,8 @@ module stunrun_core #(
         .r_dpyctl(r_dpyctl), .r_dpystrt(r_dpystrt), .r_dpytap(r_dpytap), .r_dpyadr(r_dpyadr),
         .hblank(), .vblank(),
         .dbg_pc(dbg_gsp_pc), .dbg_halted(), .dbg_instr(), .dbg_idle(),
-        .dbg_force_di(1'b0), .dbg_int_inhibit(1'b0), .dbg_force_int(1'b0), .dbg_int_pending(1'b0), .dbg_hold(1'b0)
+        .dbg_force_di(1'b0), .dbg_int_inhibit(1'b0), .dbg_force_int(1'b0), .dbg_int_pending(1'b0), .dbg_hold(1'b0),
+        .rc_req(rc_req), .rc_fill(rc_fill), .rc_src(rc_src), .rc_dst(rc_dst), .rc_len(rc_len), .rc_color(rc_color), .rc_transp(rc_transp), .rc_ack(rc_ack)
     );
 
     gsp_bus gbus (
@@ -258,7 +266,8 @@ module stunrun_core #(
         .sd_addr(c_addr[0]), .sd_req(c_req[0]), .sd_we(c_we[0]), .sd_wdata(c_wdata[0]), .sd_be(c_be[0]),
         .sd_rdata(sd_rdata), .sd_ack(c_ack[0]),
         .sb_addr(sb_addr), .sb_len(sb_len), .sb_req(sb_req), .sb_we(sb_we), .sb_wdata(sb_wdata),
-        .sb_wr(sb_wr), .sb_idx(b_idx), .sb_data(b_data), .sb_done(sb_done), .sb_widx(b_widx),
+        .sb_wr(sb_wr), .sb_idx(b_idx), .sb_data(b_data), .sb_done(sb_done), .sb_widx(b_widx), .sb_be(sb_be),
+        .rc_req(rc_req), .rc_fill(rc_fill), .rc_src(rc_src), .rc_dst(rc_dst), .rc_len(rc_len), .rc_color(rc_color), .rc_transp(rc_transp), .rc_ack(rc_ack),
         .finescroll(finescroll), .palbank(palbank),
         .pal_we_rg(pal_we_rg), .pal_we_b(pal_we_b), .pal_waddr(pal_waddr), .pal_wdata(pal_wdata),
         .vram_copied(gsp_cache_flush)

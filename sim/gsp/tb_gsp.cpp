@@ -35,6 +35,7 @@ static uint32_t shiftreg_src = 0;
 static uint32_t vram_mask = 262143;
 
 // harddriv_v.cpp mask_table for the multisync board (2bpp write)
+static bool rc_busy = false; static int rc_lat = 0; static long rc_rows = 0, rc_pixels = 0;   // row fast path model state
 static long g_watch = -1; static const char *g_cur_dis = ""; static long g_cur_idx = 0; static const TraceLine *g_cur = nullptr; static uint16_t g_ctl = 0, g_convdp = 0;
 static void watch_hit(uint32_t idx, const char *how, uint32_t bitaddr, uint16_t data) {
     if (g_watch >= 0 && (long)idx == g_watch) {
@@ -200,6 +201,27 @@ int main(int argc, char **argv) {
         // memory model: respond to requests with a random 1..6 cycle latency
         static int lat = 0; static bool busy = false;
         top->mem_ack = 0;
+        // row fast path model: the core's rc_* request is a whole 8-bpp row copy/fill
+        // (memmove semantics: source read before the destination is written)
+        top->rc_ack = 0;
+        if (top->rc_req && !rc_busy) {
+            rc_busy = true; rc_rows++; rc_pixels += top->rc_len;
+            uint32_t len = top->rc_len;
+            uint32_t dbyte = ((top->rc_dst - 0xff800000u) >> 3), sbyte = ((top->rc_src - 0xff800000u) >> 3);
+            std::vector<uint8_t> tmp(len);
+            for (uint32_t m = 0; m < len; m++) {
+                if (top->rc_fill) { uint32_t db = dbyte + m; tmp[m] = (db & 1) ? (top->rc_color >> 8) : (top->rc_color & 0xff); }
+                else { uint32_t sb = sbyte + m; uint32_t w = (sb >> 1) & vram_mask; tmp[m] = (sb & 1) ? (vram[w] >> 8) : (vram[w] & 0xff); }
+            }
+            for (uint32_t m = 0; m < len; m++) {
+                uint32_t db = dbyte + m; uint32_t w = (db >> 1) & vram_mask;
+                if (top->rc_transp && tmp[m] == 0) continue;
+                if (db & 1) vram[w] = (vram[w] & 0x00ff) | (tmp[m] << 8); else vram[w] = (vram[w] & 0xff00) | tmp[m];
+                watch_hit(w, "rowfast", top->rc_dst + m * 8, vram[w]);
+            }
+            rc_lat = 4;
+        }
+        if (rc_busy) { if (--rc_lat == 0) { top->rc_ack = 1; rc_busy = false; } }
         if (top->mem_req && !busy) { busy = true; lat = 1 + (rand() % 6); }
         if (busy) {
             if (--lat == 0) {
@@ -351,6 +373,7 @@ int main(int argc, char **argv) {
         for (uint32_t i = 0; i < 262144; i++) { uint8_t b[2] = {(uint8_t)(vram[i] & 0xff), (uint8_t)(vram[i] >> 8)}; fwrite(b, 1, 2, fo); }
         fclose(fo);
     }
+    printf("row fast path: %ld rows, %ld pixels\n", rc_rows, rc_pixels);
     printf("compared %ld instructions, %ld forced interrupts, %ld continuation entries skipped, %ld cycles\n", ncmp, nforced, nskipped, cycles);
     if (have_end) {
         long diff = 0; uint32_t first = 0;

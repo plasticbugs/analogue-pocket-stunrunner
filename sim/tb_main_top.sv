@@ -43,7 +43,7 @@ module tb_main_top (
         .SDRAM_DQ(dq), .SDRAM_A(sa), .SDRAM_DQML(dqml), .SDRAM_DQMH(dqmh), .SDRAM_BA(sba),
         .SDRAM_nCS(cs_n), .SDRAM_nWE(we_n), .SDRAM_nRAS(ras_n), .SDRAM_nCAS(cas_n), .SDRAM_CKE(cke), .SDRAM_CLK(sclk),
         .c_addr(c_addr), .c_req(c_req), .c_we(c_we), .c_wdata(c_wdata), .c_be(c_be), .c_ack(c_ack), .rdata(sd_rdata),
-        .b_addr(24'd0), .b_len(10'd0), .b_req(1'b0), .b_wr(), .b_idx(), .b_data(), .b_done(), .b_we(1'b0), .b_wdata(16'h0000), .b_widx()
+        .b_addr(24'd0), .b_len(10'd0), .b_req(1'b0), .b_wr(), .b_idx(), .b_data(), .b_done(), .b_we(1'b0), .b_wdata(16'h0000), .b_be(2'b11), .b_widx()
     );
     sdram_model #(.AW(22)) chip (
         .clk(clk), .dq(dq), .a(sa), .ba(sba), .dqml(dqml), .dqmh(dqmh),
