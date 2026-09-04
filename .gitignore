@@ -1,6 +1,8 @@
 # --- Punch-Out!! project: never commit ROMs, romsets or derived images ---
 /stunrun/
 /stunrunner-romset/
+/harddriv/
+/harddriv-romset/
 /stunrun.zip
 *.rom
 /build/
