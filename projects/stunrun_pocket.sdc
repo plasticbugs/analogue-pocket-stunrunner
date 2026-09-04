@@ -481,6 +481,16 @@ set ADSP_STAT [get_registers {*|adsp2100:*|astat[*] *|adsp2100:*|sstat[*] *|adsp
 set_multicycle_path -setup 2 -from $ADSP_STAT -to $ADSP_DAG
 set_multicycle_path -hold  1 -from $ADSP_STAT -to $ADSP_DAG
 
+# The framework's reset synchroniser (synch_3 = altshift_taps in an M10K, whose
+# read port alone is ~5 ns) drives reset_sw_s, the menu/host reset. That is a
+# level held for millions of clocks on either side of a reset event; nothing in
+# the machine needs every consumer to see its edge on the same clock (mreset
+# gates the CPUs and the loader path, which are idle either way, and the SDRAM
+# controller resets on PLL lock, not on it). Missed by 0.071 ns (slow 85 C) on
+# one placement into the JSA ROM's write enable. 2/1.
+set_multicycle_path -setup 2 -from [get_keepers {*|synch_3:sync_rst|*}]
+set_multicycle_path -hold  1 -from [get_keepers {*|synch_3:sync_rst|*}]
+
 set ADSP_SP [get_registers {*|adsp2100:*|pc_sp[*] *|adsp2100:*|loop_sp[*] *|adsp2100:*|cntr_sp[*] *|adsp2100:*|stat_sp[*]}]
 set_multicycle_path -setup 2 -from $ADSP_SP -to [get_registers {*|adsp2100:*|*}]
 set_multicycle_path -hold  1 -from $ADSP_SP -to [get_registers {*|adsp2100:*|*}]
