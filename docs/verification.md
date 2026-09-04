@@ -14,7 +14,7 @@ is not here has not been verified.
 | TMS34010 core (`rtl/gsp/`) | `sim/run_gsp.sh` | MAME GSP instruction trace (PC, ST, SP, A0–A14, B0–B14 per instruction) + end-of-window VRAM | PASS on 3 windows: boot/download (1,860,171 instr), 3D attract (88,534), title screens (3,917,724); 0 divergences over 5.87 M instructions; final VRAM word-identical; 60 mnemonics / 121 operand forms covered — `docs/gsp.md` |
 | ADSP-2100 core (`rtl/adsp/`) | `sim/run_adsp.sh` | MAME ADSP instruction trace + every data-space access + 68k RAM writes replayed | PASS on 4 windows: 5,274,473 / 22,196,327 / 961,476 / 256,948 instructions (w4 = the 3D demo's first two frames from the trigger), 0 mismatches, final memories identical; also PASS with random `io_wait` stalls (`IOWAIT=N`, asserted from the `io_rd` clock) and random `halt` injection (`HALT=N`) — `docs/adsp.md` |
 | Whole machine | `sim/run_system.sh` | MAME boot timeline (per-frame CPU PCs), MAME's title-screen frame, MAME's 68k/ADSP protocol trace (`tools/trace_som.lua`) | boots from the ROM download and reaches the title screen **pixel-identical to MAME (0 differing pixels, dy=0)** when captured on DE; palette word-identical (1024/1024); sound board answers the reset and receives the title-music command; **enters and runs the 3D attract demo** with the 68k/ADSP handshake matching MAME's per-frame counts (see below). Every SIM ROM word the ADSP receives is checked against the image (hard gate) |
-| Synthesis (Quartus 18.1, 5CEBA4) | `./build-local.sh` | — | **fits, compiles and closes timing** (build with the sound-command guard, the GSP host-access insertion and the burst-write SRT rows, 2026-09-03): Fitter 0 errors; 18,225 / 18,480 ALMs (99 %; the previous fit of the same RTL landed at 17,930 -- placement moves ±300), 15,013 registers, block RAM 52 %. **Zero negative slack** at every corner on the 96 MHz core clock with the SDC's argued multicycles (now including the ADSP status registers -> DAG files, 2/1): setup +0.377 ns (slow 85 °C), +0.395 (slow 0 °C), +3.39 / +3.52 (fast); hold +0.296 / +0.289 (slow), +0.117 / +0.050 (fast 85 / 0 °C — met, and the thinnest number in the design). Which slow corner is worst for setup flips between builds — always read both. |
+| Synthesis (Quartus 18.1, 5CEBA4) | `./build-local.sh` | — | **fits, compiles and closes timing** (0.2.0 build: sound-command guard, GSP host-access insertion, live-copy burst SRT rows): Fitter 0 errors; 17,758 / 18,480 ALMs (96 %), 15,150 registers, block RAM 52 %. **Zero negative slack** at every corner on the 96 MHz core clock with the SDC's argued multicycles (ADSP status registers -> DAG files, and the framework's reset synchroniser, added on this build's placement): setup +0.16 ns (slow 85 °C), +0.40 (slow 0 °C), +3.03 / +3.26 (fast); hold +0.293 / +0.288 (slow), +0.124 / +0.071 (fast 85 / 0 °C — met, and the thinnest number in the design). Which slow corner is worst for setup flips between builds — always read both. |
 | Hardware (Pocket) | — | — | not yet built |
 
 ## Lessons recorded on the way
@@ -465,7 +465,9 @@ which is what the word-by-word code had done, and what the game relies on: it
 modifies the source row between the transfer-in and the transfer-out, so a
 snapshot carries stale pixels (the seams) and stale GSP state. The SRT read now
 only latches the row address again and the write reads the row afresh before
-streaming it. The system-sim gates had not caught this: the title screen and
+streaming it. **Confirmed on the Pocket 2026-09-04: no seams, and the 3D
+scenes at the arcade's 20 frames per second.** The system-sim gates had not
+caught the first version: the title screen and
 the attract to frame 800 looked right, the SDRAM model saw no protocol error,
 and the GSP trace bench uses its own memory model. Lesson: when a change alters
 *what value* a consumer receives (not just when), gate it against MAME's
@@ -497,7 +499,9 @@ frames again and the whole boot lines up 18 frames behind MAME (title 549 /
 writes per frame. The 68k's ROM waits are 11-20 % of a frame (14-21 clocks per
 access) and were not the boot bottleneck.
 
-**Still open: the 3D frame rate.** In the demo the same loop ticks every 4
-frames in ours and every 3 in MAME (15 vs 20 rendered frames per second): the
-GSP's per-frame rendering exceeds the 3-frame budget. Each GSP memory access
-costs a `cen` wait plus the SDRAM latency; that is the next lever.
+**The 3D frame rate, resolved by the same change.** With the word-by-word
+SRT the demo's loop ticked every 4 frames against MAME's 3 (15 vs 20 rendered
+frames per second); with burst rows it is 3, and MAME's played level (207 of 207
+ticks at 3 frames, `tools/trace_waitflag.lua` with COIN/START) is the same rate.
+The user's first impression of the 0.2.0 build, that the game ran too fast, was
+the missing 5 frames per second arriving; MAME replays run at the same speed.

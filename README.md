@@ -9,11 +9,12 @@ OKI6295). All of it is gateware; nothing is emulated in software.
 > **ROMs are not included and never will be.** You supply your own MAME
 > `stunrun` romset; the core reads one image built from it.
 
-## Status (0.1.0)
+## Status (0.2.0)
 
 Runs on the Pocket: boot, the attract sequence with its 3D demo, coin and
-Start, level select and gameplay with sound. Verified against MAME as the
-oracle (details and numbers in `docs/verification.md`):
+Start, level select and gameplay with sound, with the 3D scenes at the
+arcade's 20 frames per second. Verified against MAME as the oracle (details
+and numbers in `docs/verification.md`):
 
 * all three CPU cores are instruction-trace-exact against MAME's debugger
   traces (68010: 43,907 PCs from reset; TMS34010: 5.87 M instructions over six
@@ -21,17 +22,16 @@ oracle (details and numbers in `docs/verification.md`):
   every data-space access replayed)
 * JSA II sound board: YM2151 register stream identical to MAME's over a played
   level, through the game's mid-level sound reset
-* title screen pixel-identical to MAME; the 68k/ADSP frame protocol matches
-  MAME's per-frame counts
+* title screen pixel-identical to MAME; the boot and attract timeline within
+  18 frames of MAME's; the 68k/ADSP frame protocol matches MAME's per-frame
+  counts
 
 Known differences from the arcade in this release:
 
-* the 3D scenes render at 15 frames per second where the arcade does 20 (the
-  graphics processor's frame takes four video frames instead of three); the
-  game's logic and speed are unaffected
-* the attract sequence runs about 2.5 seconds behind MAME's timeline
 * for a few seconds while the core loads, before the game clears its frame
   buffer, the picture shows whatever the previous core left in memory
+* the yoke is a D-pad ramp (0.7 s to full deflection, 0.25 s back to centre)
+  or the analog stick; a centred yoke is the arcade's "lowered" position
 
 ## Installing
 
