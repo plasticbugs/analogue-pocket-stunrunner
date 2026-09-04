@@ -672,6 +672,27 @@ int main(int argc, char **argv) {
             if (frame >= f0 && frame < f0 + 40 && top->dbg_gmem_req && top->dbg_gmem_we && top->dbg_gmem_ack && top->dbg_gmem_addr == 0x0FFF716A)
                 printf("mblog %4d vc %3d: write %04x (gsp pc %08x, INTPEND %04x INTENB %04x)\n", frame, top->dbg_gsp_vc, top->dbg_gmem_wdata, top->dbg_gsp_pc, top->dbg_gsp_intpend, top->dbg_gsp_intenb);
         }
+        // TB_LISTRACE=F0: the game's two 68k->GSP display lists (VRAM rows 927 and
+        // 975, 320 words each, at GSP bit addresses fff9fc00 / fffcfc00). Per frame
+        // from F0: host (68k) writes and GSP reads of each list with the scan lines
+        // of the first and last, to see whether the GSP is still reading a list
+        // the 68k has begun to rewrite -- MAME never overlaps them.
+        if (getenv("TB_LISTRACE")) {
+            static int f0 = atoi(getenv("TB_LISTRACE")); static int lastf = -1;
+            struct L { long hw, gr; int hw0, hw1, gr0, gr1; } static ls[2] = {{0,0,-1,-1,-1,-1},{0,0,-1,-1,-1,-1}};
+            static uint32_t hstadr = 0;   // HSTADR as the 68k programs it (bit address)
+            if (top->dbg_host_wr && top->dbg_host_addr == 0) hstadr = (hstadr & 0xffff0000u) | top->dbg_host_wdata;
+            if (top->dbg_host_wr && top->dbg_host_addr == 1) hstadr = (hstadr & 0x0000ffffu) | ((uint32_t)top->dbg_host_wdata << 16);
+            auto which = [](uint32_t bit) -> int { uint32_t row = (bit >> 12) & 0x3ff; uint32_t w = (bit >> 4) & 0xff; if (row == 927 && w >= 0xc0) return 0; if (row == 975 && w >= 0xc0) return 1; return -1; };
+            if (top->dbg_host_wr && top->dbg_host_addr == 2) { int k = which(hstadr); if (k >= 0) { L &l = ls[k]; if (l.hw == 0) l.hw0 = top->dbg_vcount; l.hw1 = top->dbg_vcount; l.hw++; } hstadr += 16; }
+            if (top->dbg_gmem_req && top->dbg_gmem_ack && !top->dbg_gmem_we) { int k = which((uint32_t)top->dbg_gmem_addr << 4); if (k >= 0) { L &l = ls[k]; if (l.gr == 0) l.gr0 = top->dbg_vcount; l.gr1 = top->dbg_vcount; l.gr++; } }
+            if (frame != lastf) {
+                if (lastf >= f0) printf("listrace %4d: listA(9fc00) 68k %4ld wr vc %3d..%3d gsp %4ld rd vc %3d..%3d | listB(cfc00) 68k %4ld wr vc %3d..%3d gsp %4ld rd vc %3d..%3d\n", lastf,
+                    ls[0].hw, ls[0].hw0, ls[0].hw1, ls[0].gr, ls[0].gr0, ls[0].gr1, ls[1].hw, ls[1].hw0, ls[1].hw1, ls[1].gr, ls[1].gr0, ls[1].gr1);
+                for (int k = 0; k < 2; k++) ls[k] = {0,0,-1,-1,-1,-1};
+                lastf = frame;
+            }
+        }
         // TB_SNDFINE=F0: per FRAME sound-board activity for frames F0..F0+199:
         // 68k command writes and the 6502's reads of that latch (a write not
         // followed by a read before the next write is a lost command), NMI

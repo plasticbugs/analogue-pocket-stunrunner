@@ -510,7 +510,7 @@ ticks at 3 frames, `tools/trace_waitflag.lua` with COIN/START) is the same rate.
 The user's first impression of the 0.2.0 build, that the game ran too fast, was
 the missing 5 frames per second arriving; MAME replays run at the same speed.
 
-## The level-end tally text shimmer (open; cause found)
+## The level-end tally text shimmer (fix 2: blit interrupt budget; hardware confirmation pending)
 
 Symptom on the Pocket: on the level-end tally screen, while the repair arms
 animate, the score text in the box shimmers / loses pixels. Not in attract;
@@ -555,3 +555,37 @@ between-row interruption. GSP trace bench: all nine windows PASS (the 3D
 window runs 4,224 rows through the fast path); the repair window, which failed
 by 2,113 VRAM words, passes with 5,180 fast rows, as do its 5033 and 5047
 sub-windows. Hardware confirmation pending.
+
+**Hardware said no.** The 0.2.1-dev build with the fast path played with no
+regressions, and the text still shimmered at the level end. The GSP bench could
+not have seen why: it forces interrupts at the instructions where MAME took
+them, and MAME's blits are atomic, so a forced interrupt never lands inside a
+blit that MAME did not also complete first. On the Pocket the display
+interrupt lands wherever the GSP is at scan line 2. The fast path made the
+tally-box copy immune, but the text glyphs are binary blits (`PIXBLT B,XY`),
+which still go through the per-pixel slow path and still take a pending
+interrupt between rows -- and the handler's back-buffer FILL rows then wipe
+pixels the interrupted glyph and the draws before it had put down. Same
+mechanism as before, one blit kind further along.
+
+The protocol itself was checked before settling on this (MAME Lua taps,
+`artifacts/listrace_mame.txt`, `listptr_mame.txt`, `textsrc_mame.txt`): the
+68k double-buffers its 320-word display lists (fff9fc00 / fffcfc00) and its
+text strings, and rewrites a list only after the GSP's INTOUT for the *next*
+frame, which the GSP main loop raises after its previous render is complete
+and the DI handler has cleared the go word (fff71670, the target-buffer
+address). The flip is the handler writing DPYSTRT *and* DPYADR at line 2
+(before VEBLNK=19), which our register file honours. SDRAM write ordering
+between the random port and the burst port is preserved (the random-port
+ack is at the WRITE command; bursts only start from idle). None of those can
+lose text; the between-row interruption can.
+
+**Fix 2 (`blt_age`, `rtl/gsp/tms34010.sv`).** A slow-path blit is
+interrupted between rows only once it has run more than 2^15 clocks (0.34
+ms, 5.4 scan lines). Glyphs, polygon spans and small fills complete
+atomically -- MAME's order -- and the display interrupt is still taken by
+about line 8 when a long blit (a title logo) is cut, well before the picture
+starts at line 19. Interrupts pending at a blit's issue are still taken
+before it touches anything, as before. The trace bench is unaffected (its
+forced interrupts already model every blit as atomic) and its four tally
+windows PASS; lint clean. Shipped for hardware test as 0.2.2-dev.

@@ -757,6 +757,20 @@ module tms34010 (
     // backed up, and the re-execution (blt_rows_done) performs only the
     // writeback.
     logic        blt_defer, blt_forced_after, blt_rows_done;
+    // Slow-path blits are interruptible between rows so a long one cannot hold
+    // the display interrupt past the top of the picture (the DI handler flips
+    // the buffers at line 2; the picture starts at VEBLNK, line 19). But the
+    // handler also clears rows of the buffer being drawn, and the 34010 whose
+    // code this is never has a blit interrupted (MAME's are atomic), so a
+    // between-row interrupt lets the handler wipe pixels an earlier draw put
+    // down -- on the tally screen the text glyphs, drawn by binary blits
+    // through the slow path, lost pixels every time the DI landed inside one.
+    // So a slow blit is interrupted between rows only once it has run longer
+    // than this budget: 2^15 clocks, 0.34 ms at 96 MHz, 5.4 scan lines. Short
+    // blits (glyphs, polygon spans, small fills) complete atomically, exactly
+    // MAME's order; only the rare long ones (title logos) are cut, and the DI
+    // is still taken by about line 8.
+    logic [15:0] blt_age;
     // A row qualifies for the fast path when every pixel is an unconditional
     // 8-bit replace (no PPOP, no binary expand, no shift-register mode;
     // transparency on zero becomes per-byte write enables), it is at least 16 pixels, and both ends are in
@@ -885,6 +899,8 @@ module tms34010 (
         if (dbg_force_di) io[R_INTPEND] <= io[R_INTPEND] | INT_DI;
         if (dbg_force_int) force_pend <= 1'b1;
 
+        if (blt_age != 16'hffff) blt_age <= blt_age + 16'd1;   // reset at each blit's issue
+
         // ---------------- video raster ----------------
         line_start <= 1'b0;
         if (cen_vid) begin
@@ -920,7 +936,7 @@ module tms34010 (
             for (int i = 0; i < 32; i++) io[i] <= 16'h0;
             io[R_HSTCTLH] <= 16'h8000;          // halt on reset (/HCS)
             st <= 32'h0000_0010; blt_int_wb <= 1'b0;
-            rc_req <= 1'b0; blt_defer <= 1'b0; blt_forced_after <= 1'b0; blt_rows_done <= 1'b0;
+            rc_req <= 1'b0; blt_defer <= 1'b0; blt_forced_after <= 1'b0; blt_rows_done <= 1'b0; blt_age <= 16'd0;
             pc <= 32'h0;
             reset_deferred <= 1'b1;
             istep <= 4'd0;
@@ -1698,7 +1714,7 @@ module tms34010 (
                     // those are honoured at the blit's issue point alone. In the
                     // system dbg_int_inhibit and dbg_int_pending are tied off.
                     if ((nmi_pend || (st[SB_IE] && ((io[R_INTPEND] & io[R_INTENB] & 16'h0e00) != 16'h0)))
-                        && !dbg_int_inhibit && !blt_fast_ok) begin
+                        && !dbg_int_inhibit && !blt_fast_ok && blt_age[15]) begin
                         // take the interrupt between rows: write the progress into
                         // DADDR/SADDR/DYDX via the end-of-blit sequence, keep P
                         blt_int_wb <= 1'b1;
@@ -2246,6 +2262,7 @@ module tms34010 (
                         // run the operation, which resumes from whatever SADDR /
                         // DADDR / DYDX now hold.
                         if (st[SB_P]) st[SB_P] <= 1'b0;
+                        blt_age <= 16'd0;
                         blt_mode_fill <= (opc == OP_FILL_L || opc == OP_FILL_XY);
                         blt_mode_b    <= (opc == OP_PIXBLT_BL || opc == OP_PIXBLT_BXY);
                         blt_dst_lin   <= (opc == OP_FILL_L || opc == OP_PIXBLT_BL || opc == OP_PIXBLT_LL || opc == OP_PIXBLT_XYL);
