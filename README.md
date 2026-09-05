@@ -6,6 +6,9 @@ TMS34010 graphics processor drawing polygons into a 512 KB frame buffer, an
 ADSP-2100 DSP doing the 3D maths, and the JSA II sound board (6502, YM2151,
 OKI6295). All of it is gateware; nothing is emulated in software.
 
+[![S.T.U.N. Runner](https://img.youtube.com/vi/m-TtuQ_x1SI/0.jpg)](https://www.youtube.com/watch?v=m-TtuQ_x1SI)
+
+
 > **ROMs are not included and never will be.** You supply your own MAME
 > `stunrun` romset; the core reads one image built from it.
 
