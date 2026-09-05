@@ -771,6 +771,16 @@ module tms34010 (
     // MAME's order; only the rare long ones (title logos) are cut, and the DI
     // is still taken by about line 8.
     logic [15:0] blt_age;
+    // Sum of the per-line DPYADR steps applied since the start-of-blank load,
+    // zero throughout vertical blank. A CPU write to DPYADR that lands inside
+    // the picture -- the DI handler's flip, run late behind a long atomic blit
+    // such as the 23,800-word tally-box copy (1.2 ms, 20 lines, from line 2
+    // past VEBLNK=19) -- is pre-stepped by it, so the rest of the frame shows
+    // the new buffer at the right rows (a tear between two near-identical
+    // buffers) instead of restarting it from row 0 partway down (the whole
+    // picture bouncing for a frame). In blank, and always in MAME where the
+    // handler is never late, the write is stored as it came.
+    logic [15:0] dpy_adj;
     // A row qualifies for the fast path when every pixel is an unconditional
     // 8-bit replace (no PPOP, no binary expand, no shift-register mode;
     // transparency on zero becomes per-byte write enables), it is at least 16 pixels, and both ends are in
@@ -844,6 +854,7 @@ module tms34010 (
                 io[idx] <= n;
             end
             5'd28, 5'd29: begin end
+            5'd30: io[idx] <= (d[1:0] == 2'b00) ? d - dpy_adj : d;   // DPYADR, see dpy_adj
             default: io[idx] <= d;
         endcase
     endtask
@@ -914,12 +925,13 @@ module tms34010 (
         end
         if (line_start) begin
             if (io[R_DPYCTL][15] && vc == io[R_DPYINT]) io[R_INTPEND] <= io[R_INTPEND] | INT_DI;
-            if (vc == io[R_VSBLNK]) io[R_DPYADR] <= io[R_DPYSTRT];
+            if (vc == io[R_VSBLNK]) begin io[R_DPYADR] <= io[R_DPYSTRT]; dpy_adj <= 16'd0; end
             else if (vc >= io[R_VEBLNK] && vc < io[R_VSBLNK]) begin
                 if (io[R_DPYADR][1:0] == 2'b00)
                     io[R_DPYADR] <= ((io[R_DPYADR] & 16'hfffc) - (io[R_DPYCTL] & 16'h03fc)) | (io[R_DPYSTRT] & 16'h0003);
                 else
                     io[R_DPYADR] <= (io[R_DPYADR] & 16'hfffc) | ((io[R_DPYADR] - 16'd1) & 16'h0003);
+                if (io[R_DPYSTRT][1:0] == 2'b00) dpy_adj <= dpy_adj + (io[R_DPYCTL] & 16'h03fc);
             end
         end
 
@@ -936,7 +948,7 @@ module tms34010 (
             for (int i = 0; i < 32; i++) io[i] <= 16'h0;
             io[R_HSTCTLH] <= 16'h8000;          // halt on reset (/HCS)
             st <= 32'h0000_0010; blt_int_wb <= 1'b0;
-            rc_req <= 1'b0; blt_defer <= 1'b0; blt_forced_after <= 1'b0; blt_rows_done <= 1'b0; blt_age <= 16'd0;
+            rc_req <= 1'b0; blt_defer <= 1'b0; blt_forced_after <= 1'b0; blt_rows_done <= 1'b0; blt_age <= 16'd0; dpy_adj <= 16'd0;
             pc <= 32'h0;
             reset_deferred <= 1'b1;
             istep <= 4'd0;

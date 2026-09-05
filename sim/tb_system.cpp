@@ -672,6 +672,18 @@ int main(int argc, char **argv) {
             if (frame >= f0 && frame < f0 + 40 && top->dbg_gmem_req && top->dbg_gmem_we && top->dbg_gmem_ack && top->dbg_gmem_addr == 0x0FFF716A)
                 printf("mblog %4d vc %3d: write %04x (gsp pc %08x, INTPEND %04x INTENB %04x)\n", frame, top->dbg_gsp_vc, top->dbg_gmem_wdata, top->dbg_gsp_pc, top->dbg_gsp_intpend, top->dbg_gsp_intenb);
         }
+        // TB_FLIPLOG=F0: every CPU write to DPYADR (a change not made by the
+        // per-line raster step) with its scan line, from frame F0; the ones
+        // inside the picture (VEBLNK..VSBLNK) are the late flips that bounce or
+        // tear the frame.
+        if (getenv("TB_FLIPLOG")) {
+            static int f0 = atoi(getenv("TB_FLIPLOG")); static uint16_t prev = 0xffff; static bool first = true;
+            if (!first && top->dbg_dpyadr != prev && !top->dbg_line_start && frame >= f0) {
+                bool vis = top->dbg_vcount >= top->dbg_veblnk && top->dbg_vcount < top->dbg_vsblnk;
+                printf("flip frame %d vc %d: dpyadr %04x -> %04x%s\n", frame, top->dbg_vcount, prev, top->dbg_dpyadr, vis ? "  LATE (inside the picture)" : "");
+            }
+            prev = top->dbg_dpyadr; first = false;
+        }
         // TB_LISTRACE=F0: the game's two 68k->GSP display lists (VRAM rows 927 and
         // 975, 320 words each, at GSP bit addresses fff9fc00 / fffcfc00). Per frame
         // from F0: host (68k) writes and GSP reads of each list with the scan lines

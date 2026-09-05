@@ -510,7 +510,7 @@ ticks at 3 frames, `tools/trace_waitflag.lua` with COIN/START) is the same rate.
 The user's first impression of the 0.2.0 build, that the game ran too fast, was
 the missing 5 frames per second arriving; MAME replays run at the same speed.
 
-## The level-end tally text shimmer (fix 2: blit interrupt budget; hardware confirmation pending)
+## The level-end tally text shimmer (fixed by the blit interrupt budget) and the one-frame bounce it uncovered
 
 Symptom on the Pocket: on the level-end tally screen, while the repair arms
 animate, the score text in the box shimmers / loses pixels. Not in attract;
@@ -589,3 +589,29 @@ starts at line 19. Interrupts pending at a blit's issue are still taken
 before it touches anything, as before. The trace bench is unaffected (its
 forced interrupts already model every blit as atomic) and its four tally
 windows PASS; lint clean. Shipped for hardware test as 0.2.2-dev.
+
+**Hardware: text clean; a new one-frame vertical bounce, sporadic, tally
+only.** With the glyphs atomic, the thing that now holds the display
+interrupt longest is the tally-box copy itself: one fast-path blit of
+23,800 words, atomic since 0.2.1-dev, at about 2.3 clocks a word through
+the burst engine (32-word chunks, 2 clocks a word, open/precharge per
+chunk, the picture fetch interleaved) -- 1.2 ms, some 20 scan lines. When
+line 2 falls inside it, the handler's flip (DPYSTRT then DPYADR, see the
+protocol notes above) lands after the picture has started at VEBLNK=19;
+the display, already some lines into the old buffer, restarts from the new
+buffer's row 0 at that line, and the whole picture sits low for the rest of
+the frame. Making the copy interruptible again would bring the cleared
+mid-copy artefact back, so the display side absorbs it instead.
+
+**Fix 3 (`dpy_adj`, `rtl/gsp/tms34010.sv`).** The core keeps the sum of
+the per-line DPYADR steps applied since the start-of-blank load (zero in
+blank). A CPU write to DPYADR inside the picture is pre-stepped by it, so
+the rest of the frame continues at the right rows of the new buffer: at
+worst a one-frame tear between two nearly identical buffers where the arm
+crosses the seam, instead of a bounce. In blank, and in MAME where the
+handler is never late, the write is stored as it came. Bench probe
+`TB_FLIPLOG` lists every flip with its scan line and marks the late ones.
+The real cure is a faster burst engine (one word a clock would make the
+copy 0.65 ms and the flip land by line 13); that touches SDRAM read
+capture at 96 MHz and is left for its own change. Shipped for hardware
+test as 0.2.3-dev.
