@@ -9,7 +9,7 @@ OKI6295). All of it is gateware; nothing is emulated in software.
 > **ROMs are not included and never will be.** You supply your own MAME
 > `stunrun` romset; the core reads one image built from it.
 
-## Status (0.2.0)
+## Status (0.2.1)
 
 Runs on the Pocket: boot, the attract sequence with its 3D demo, coin and
 Start, level select and gameplay with sound, with the 3D scenes at the
@@ -25,6 +25,10 @@ and numbers in `docs/verification.md`):
 * title screen pixel-identical to MAME; the boot and attract timeline within
   18 frames of MAME's; the 68k/ADSP frame protocol matches MAME's per-frame
   counts
+* 0.2.1: the level-end tally screen is clean on hardware -- the score text no
+  longer shimmers while the repair arms animate (short blits now complete
+  atomically, MAME's order) and the picture no longer bounces for a frame
+  when the buffer flip runs late behind the tally-box copy
 
 Known differences from the arcade in this release:
 
