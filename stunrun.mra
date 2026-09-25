@@ -20,42 +20,42 @@
 
         <!-- 68010 program: interleave pairs, even byte from the 200x socket -->
         <interleave output="16">
-            <part name="136070-2102.200r" crc="e0ed54d8" map="10"/>
-            <part name="136070-2101.210r" crc="3008bcf8" map="01"/>
+            <part name="136070-2102.200r" crc="e0ed54d8" map="01"/>
+            <part name="136070-2101.210r" crc="3008bcf8" map="10"/>
         </interleave>
         <interleave output="16">
-            <part name="136070-6104.200s" crc="f469f91c" map="10"/>
-            <part name="136070-6103.210s" crc="096aad68" map="01"/>
+            <part name="136070-6104.200s" crc="f469f91c" map="01"/>
+            <part name="136070-6103.210s" crc="096aad68" map="10"/>
         </interleave>
         <interleave output="16">
-            <part name="136070-6106.200t" crc="b445bae5" map="10"/>
-            <part name="136070-6105.210t" crc="42736c52" map="01"/>
+            <part name="136070-6106.200t" crc="b445bae5" map="01"/>
+            <part name="136070-6105.210t" crc="42736c52" map="10"/>
         </interleave>
         <interleave output="16">
-            <part name="136070-2108.200u" crc="0ce849aa" map="10"/>
-            <part name="136070-2107.210u" crc="19bc7495" map="01"/>
+            <part name="136070-2108.200u" crc="0ce849aa" map="01"/>
+            <part name="136070-2107.210u" crc="19bc7495" map="10"/>
         </interleave>
         <interleave output="16">
-            <part name="136070-2110.200v" crc="4f6d22c5" map="10"/>
-            <part name="136070-2109.210v" crc="ac6d4d4a" map="01"/>
+            <part name="136070-2110.200v" crc="4f6d22c5" map="01"/>
+            <part name="136070-2109.210v" crc="ac6d4d4a" map="10"/>
         </interleave>
         <interleave output="16">
-            <part name="136070-2112.200w" crc="3f896aaf" map="10"/>
-            <part name="136070-2111.210w" crc="47f010ad" map="01"/>
+            <part name="136070-2112.200w" crc="3f896aaf" map="01"/>
+            <part name="136070-2111.210w" crc="47f010ad" map="10"/>
         </interleave>
 
         <!-- ADSP SIM data: 16-bit words stored big-endian like the 68k program (h socket byte at the even address = high byte, k at the odd = low); the core byte-swaps on fetch -->
         <interleave output="16">
-            <part name="136070-2121.90h" crc="0ebf8e58" map="10"/>
-            <part name="136070-2118.90k" crc="fb98abaf" map="01"/>
+            <part name="136070-2121.90h" crc="0ebf8e58" map="01"/>
+            <part name="136070-2118.90k" crc="fb98abaf" map="10"/>
         </interleave>
         <interleave output="16">
-            <part name="136070-2122.10h" crc="bd5380bd" map="10"/>
-            <part name="136070-2119.10k" crc="bde8bd31" map="01"/>
+            <part name="136070-2122.10h" crc="bd5380bd" map="01"/>
+            <part name="136070-2119.10k" crc="bde8bd31" map="10"/>
         </interleave>
         <interleave output="16">
-            <part name="136070-2120.9h" crc="55a30976" map="10"/>
-            <part name="136070-2117.9k" crc="d4a9696d" map="01"/>
+            <part name="136070-2120.9h" crc="55a30976" map="01"/>
+            <part name="136070-2117.9k" crc="d4a9696d" map="10"/>
         </interleave>
 
         <!-- OKI6295 ADPCM -->
