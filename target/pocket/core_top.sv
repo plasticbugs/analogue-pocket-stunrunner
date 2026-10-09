@@ -1124,7 +1124,8 @@ module core_top
     //! the board's 10 MHz across the line.  ana_retime stores each burst in
     //! a one-line buffer and plays it back as the board scans it -- 634 dots
     //! a line, 262 lines, 15.77 kHz / 60.20 Hz -- on clk_ana, four clocks a
-    //! dot.  The Analogizer is held idle until the ROM is loaded.  Set from
+    //! dot.  RGBS, RGsB and YPbPr only: the Y/C encoder and the scandoubler
+    //! are left out to fit.  The Analogizer is held idle until the ROM is loaded.  Set from
     //! the core's menu (interact.json, 0xF7000000-08).  With the menu's
     //! "Analogizer" off, the default, the cartridge port stays as an unused
     //! one and key1..key4 are cont1..cont4_key.
@@ -1139,7 +1140,10 @@ module core_top
                 .clk_ana(clk_ana), .ce(a_ce), .rgb(a_rgb),
                 .hs(a_hs), .vs(a_vs), .hb(a_hb), .vb(a_vb)
             );
-            pocket_analogizer #(.CLK_HZ(40_000_000), .LINE_LEN(634)) u_analogizer (
+            // no Y/C and no scandoubler: the core is at 90 % without them
+            // (docs/analogizer.md)
+            pocket_analogizer #(.CLK_HZ(40_000_000), .LINE_LEN(634),
+                                .USE_YC(0), .USE_SD(0)) u_analogizer (
                 .clk_74a(clk_74a), .clk(clk_ana), .rst(sr_reset || ioctl_download),
                 .clk_src(clk_ana), .src_pix_ce(a_ce), .src_rgb(a_rgb),
                 .src_hs(a_hs), .src_vs(a_vs), .src_hb(a_hb), .src_vb(a_vb),

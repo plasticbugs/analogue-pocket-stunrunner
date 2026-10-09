@@ -52,7 +52,11 @@ set_clock_groups -asynchronous \
 # SDRAM
 #
 # The chip is clocked from core_pll general[3]: the same 96 MHz as the
-# controller, phase-shifted. The phase and the exception below are DERIVED from
+# controller, phase-shifted.  The shift was 5859 ps (45 VCO steps of 130.1 ps)
+# until the Analogizer's fit (docs/analogizer.md) moved the address outputs:
+# setup to dram_clk at slow 85C went to -0.334 ns and dq_in hold at fast 0C to
+# -0.046 ns, both of which a later chip clock helps, with dq_in setup (+1.54)
+# and output hold (+3.38) to spare.  It is now 6376 ps (49 steps). The phase and the exception below are DERIVED from
 # the analyser's own numbers on a real fit, not assumed:
 #
 #   clock network, PLL output -> dram_clk pin          12.56 ns

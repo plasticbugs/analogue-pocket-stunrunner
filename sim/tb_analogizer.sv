@@ -17,7 +17,9 @@
 //           dots and lines asked and stays out of the picture, the picture
 //           is unchanged, and a jump between settings never inverts csync
 //   SVGA    the scandoubler: twice the lines per frame, at half the period
-//   YPbPr, Y/C  run without an unknown on any pin (no reference to compare)
+//           (this core leaves it out: its modes must show RGBS instead)
+//   YPbPr, Y/C  run without an unknown on any pin (no reference to compare;
+//           this core leaves Y/C out: its modes must show RGBS instead)
 //   SNAC    each assignment puts pads where AnalogizerConfigurator says
 //   blank   "blank the Pocket screen" reaches pocket_off
 //
@@ -45,6 +47,14 @@ module tb_analogizer;
     localparam int APD = 4;               // Analogizer clocks a dot
     localparam int FRAME = HTOTAL * VTOTAL * APD;
     localparam int SRC_LAT = 3;           // clk_sys/4 beats from the window's opening to its first pixel
+    // the adapter's parts this core builds (core_top): no Y/C encoder and no
+    // scandoubler, to fit.  Their checks are skipped, and their modes must
+    // show RGBS instead.
+    localparam int USE_YC = 0, USE_SD = 0;
+    // the end of the Y/C colour burst after hsync ends, in Analogizer clocks
+    // (pocket_analogizer's CB_NTSC; NTSC's is the later)
+    localparam int CB_END = (2 * (CLK_HZ * 3256.0 / 3150000000.0) + 1) / 2
+                          + (2 * (CLK_HZ * 792.0 / 315000000.0) + 1) / 2;
 
     // ------------------------------------------------------------- clocks
     // in units where 96 and 40 MHz are exact (one PLL in the core): 1/1920 us
@@ -187,7 +197,7 @@ module tb_analogizer;
 
     logic rst = 1'b1;
 
-    pocket_analogizer #(.CLK_HZ(CLK_HZ), .LINE_LEN(HTOTAL)) dut (
+    pocket_analogizer #(.CLK_HZ(CLK_HZ), .LINE_LEN(HTOTAL), .USE_YC(USE_YC), .USE_SD(USE_SD)) dut (
         .clk_74a(clk_74a), .clk(clk), .rst(rst),
         .clk_src(clk), .src_pix_ce(pix_a), .src_rgb(rgb),
         .src_hs(hs), .src_vs(vs), .src_hb(hb), .src_vb(vb),
@@ -311,10 +321,17 @@ module tb_analogizer;
             @(negedge clk);
             if (dac_blank_n && !dac_hs) in_pic++;
         end
-        // from inside the picture, so that a vsync moved to the frame's very
-        // start is not caught half over: then the vsync, the first low run on
-        // csync longer than two hsyncs
-        do begin bl_p = dac_blank_n; @(negedge clk); end while (bl_p || !dac_blank_n);
+        // start from an ordinary hsync, never partway through a vsync (a
+        // slider can put vsync at the top of the frame, and this board's is
+        // there already)
+        run = 0;
+        forever begin
+            @(negedge clk);
+            if (!dac_hs) run++;
+            else if (run > 0 && run <= (HS1 - HS0) * APD + 4) break;
+            else run = 0;
+        end
+        // the vsync: the first low run on csync longer than two hsyncs
         run = 0; t = 0;
         while (run < 2 * (HS1 - HS0) * APD) begin
             @(negedge clk); t++;
@@ -492,27 +509,55 @@ module tb_analogizer;
                 if (gh - gh0 != hs[i] * APD) fail("position: the picture did not move by the dots asked");
                 if (gv - gv0 != vs_[i]) fail("position: the picture did not move by the lines asked");
                 if (e != 0) fail("position: a sync moved into the picture");
-                write_settings(settings(1'b1, 5'h00, 4'd0, 4'h5, 1'b0));
-                check_svga();
-                write_settings(settings(1'b1, 5'h00, 4'd0, 4'h0, 1'b0));
+                if (USE_YC != 0 && gh - (HS1 - HS0) * APD < CB_END) begin
+                    $display("  %0d clocks from hsync's end to the picture, the colour burst needs %0d",
+                             gh - (HS1 - HS0) * APD, CB_END);
+                    fail("position: the picture starts inside the Y/C colour burst");
+                end
+                if (USE_SD != 0) begin
+                    write_settings(settings(1'b1, 5'h00, 4'd0, 4'h5, 1'b0));
+                    check_svga();
+                    write_settings(settings(1'b1, 5'h00, 4'd0, 4'h0, 1'b0));
+                end
             end
             check_jump(1'b1, POS_V_MAX, (POS_V_MAX - (VS1 - VS0) - 1 < POS_V_MIN) ? POS_V_MIN
                                         : POS_V_MAX - (VS1 - VS0) - 1);
             check_jump(1'b0, POS_H_MAX, (POS_H_MAX - (HS1 - HS0) - 1 < POS_H_MIN) ? POS_H_MIN
                                         : POS_H_MAX - (HS1 - HS0) - 1);
+            // and a large step down to 0, which hands the sync back to the
+            // source's: one sync's width plus one past it, where the range has it
+            check_jump(1'b1, (VS1 - VS0 + 1 <= POS_V_MAX) ? VS1 - VS0 + 1 : POS_V_MAX, 0);
+            check_jump(1'b0, (HS1 - HS0 + 1 <= POS_H_MAX) ? HS1 - HS0 + 1 : POS_H_MAX, 0);
             set_position(0, 0);
             measure_position(gh, gv, e);
             if (gh != gh0 || gv != gv0) fail("position: 0,0 is not where it started");
         end
 
-        write_settings(settings(1'b1, 5'h00, 4'd0, 4'h5, 1'b0));   // SC 0% RGBHV
-        check_svga();
+        if (USE_SD != 0) begin
+            write_settings(settings(1'b1, 5'h00, 4'd0, 4'h5, 1'b0));   // SC 0% RGBHV
+            check_svga();
+        end else begin
+            // left out: every scandoubler mode must show RGBS, every dot
+            $display("SVGA: not built in this core (USE_SD = 0); checking its modes show RGBS");
+            for (int m = 5; m <= 9; m++) begin
+                write_settings(settings(1'b1, 5'h00, 4'd0, 4'(m), 1'b0));
+                check_rgbs();
+            end
+        end
         write_settings(settings(1'b1, 5'h00, 4'd0, 4'h2, 1'b0));   // YPbPr
         check_known("YPbPr");
-        write_settings(settings(1'b1, 5'h00, 4'd0, 4'h3, 1'b0));   // Y/C NTSC
-        check_known("Y/C NTSC");
-        write_settings(settings(1'b1, 5'h00, 4'd0, 4'h4, 1'b0));   // Y/C PAL
-        check_known("Y/C PAL");
+        if (USE_YC != 0) begin
+            write_settings(settings(1'b1, 5'h00, 4'd0, 4'h3, 1'b0));   // Y/C NTSC
+            check_known("Y/C NTSC");
+            write_settings(settings(1'b1, 5'h00, 4'd0, 4'h4, 1'b0));   // Y/C PAL
+            check_known("Y/C PAL");
+        end else begin
+            $display("Y/C: not built in this core (USE_YC = 0); checking its modes show RGBS");
+            write_settings(settings(1'b1, 5'h00, 4'd0, 4'h3, 1'b0));
+            check_rgbs();
+            write_settings(settings(1'b1, 5'h00, 4'd0, 4'h4, 1'b0));
+            check_rgbs();
+        end
 
         write_settings(settings(1'b1, 5'h00, 4'd0, 4'h0, 1'b1));
         if (pocket_off !== 1'b1) fail("blank: pocket_off not set");

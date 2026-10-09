@@ -24,7 +24,7 @@ core.
 | entry | options |
 |---|---|
 | Analogizer | Off (the default), On, On, Pocket off (the picture goes to the CRT only) |
-| Analogizer Video | RGBS, RGsB, YPbPr, Y/C NTSC, Y/C PAL, Scandoubler, Scandoubler 25% / 50% / 75%, Scandoubler HQ2x |
+| Analogizer Video | RGBS, RGsB, YPbPr (this core has no Y/C or scandoubler modes: below) |
 | SNAC Adapter | None, DB15, NES, SNES, PCE 2-button, PCE 6-button, PCE Multitap, DB15 Fast, SNES A,B<->X,Y, PSX Digital, PSX Digital Fast, PSX Analog, PSX Analog Fast |
 | SNAC Assignment | the six below |
 | Analogizer H Position | -32 to +12 dots; + moves the picture right |
@@ -44,18 +44,23 @@ still the set's to adjust. 0 is the board's own timing.
 
 **Video.** The core sends the board's own raster: 10 MHz dots, 634 × 262,
 512 × 240 visible, **15.77 kHz, 60.20 Hz** -- a standard 15 kHz signal for a
-TV or arcade monitor through RGBS, RGsB, YPbPr or Y/C. The scandoubler modes
-are 31.5 kHz at the same 60.20 Hz, for a VGA monitor. (The multisync board's
+TV or arcade monitor through RGBS, RGsB or YPbPr. (The multisync board's
 name is its monitor's, which S.T.U.N. Runner drives at 15 kHz; the game's own
 timing registers are in docs/hardware.md 4.3.)
+
+**No Y/C and no scandoubler.** The game fills 90 % of the Pocket's FPGA on
+its own, and the full adapter did not fit (102 %). This core is built
+without the adapter's Y/C encoder and without its scandoubler (with HQ2x
+and the VGA scanlines), which leaves RGBS, RGsB and YPbPr: a SCART or
+BNC RGB monitor, a PVM, or a set with a component input. An S-Video-only
+set and a VGA monitor are not supported. The menu offers only the three;
+a Y/C or scandoubler value written some other way shows RGBS.
 
 | mode | SOG switch | notes |
 |---|---|---|
 | RGBS | off | VGA-to-SCART or VGA-to-BNC |
 | RGsB | on | R2/R3 adapters only |
 | YPbPr | on | R2/R3 adapters only |
-| Y/C NTSC, Y/C PAL | off | needs an active Y/C adapter on the VGA port |
-| SC 0% / 25% / 50% / 75% / HQ2x | off | scandoubled for a VGA monitor: twice the line rate |
 
 "On, Pocket off" turns the Pocket's own picture black while the CRT keeps
 it.
@@ -96,8 +101,7 @@ the adapter itself to the Analogizer project.
    left 40 % means the re-timer is not in the path), 15.77 kHz / 60.20 Hz
    on a PVM's info screen. No picture at all: say whether the set reports a
    signal.
-3. **Each other mode** (RGsB and YPbPr need the SOG switch on; the
-   scandoubler modes need a VGA monitor).
+3. **RGsB and YPbPr** (both need the SOG switch on).
 4. **SNAC**: one pad, "SNAC P1 -> P1"; it steers, fires and boosts. The
    Pocket's own stick and buttons keep working too: the board has one
    player, and the core takes the first two controller words together
@@ -177,7 +181,8 @@ for hsync). With the rule such a jump skips one pulse instead.
 hsync is the line's first 38 dots and the picture dots 110–621 of 634, so
 hsync can come 12 dots earlier before it meets the end of the picture, and
 32 later before the Y/C colour burst (it ends about 3.5 µs, 35 dots, after
-hsync does) would reach the picture's start. Vsync is the first 4 lines and
+hsync does) would reach the picture's start -- a limit kept although this
+core builds no Y/C, so that the range is right if it ever does. Vsync is the first 4 lines and
 the picture lines 19–258 of 262: it can come 3 lines earlier and 15 later
 and stay in the blanking. `sim/run_analogizer.sh` tries both ends; one step
 past either (+13 dots, +4 or -16 lines) fails it with csync inside the
@@ -221,8 +226,9 @@ later than the Pocket's; nothing else about it changes.
 
 `openFPGA_Pocket_Analogizer` runs its logic on `i_clk`, puts `video_clk` on the
 cartridge pin that clocks the ADV7123, and assumes that is `i_clk` too. The
-scandoubler halves the pixel period, so the clock has to be at least four
-times the dot rate. The shipped Analogizer cores use 42.95–48 MHz; this core
+scandoubler halves the pixel period, so with it the clock has to be at least
+four times the dot rate (this core builds none, but keeps the rule). The
+shipped Analogizer cores use 42.95–48 MHz; this core
 uses 40 MHz, exactly four times its 10 MHz dot, so every dot is four clocks
 and every line the same length (48 MHz would make dots of 4 and 5 clocks).
 It is the PLL's spare fifth output, from the same 960 MHz VCO as `clk_sys`,
@@ -235,9 +241,25 @@ synchronisers on hsync, vsync and vblank -- and the wrapper's to `clk_74a`.
 those paths needs, so the SDC puts `general[4]` in an asynchronous group of
 its own rather than in the core PLL's group.
 
-The Y/C encoder's subcarrier step and colour-burst window are computed in
-integers from `CLK_HZ`. The reals used elsewhere lose the bits past 32 in some
-tools, and MSX2's hand-typed NTSC step is a few counts off.
+### Y/C and the scandoubler left out: a local change to the module
+
+The adapter module has no switches, so this repository's copy of
+`openFPGA_Pocket_Analogizer.v` has two, `USE_YC` and `USE_SD` (default 1), a
+local change marked LOCAL in it and recorded in `modules/VENDOR.md`.
+`USE_YC = 0` leaves out `yc_out_legacy`; `USE_SD = 0` leaves out
+`scandoubler_2` (and the `Hq2x` inside it) and `scanlines_analogizer`.
+Their outputs are tied to the pass-through values (no colour, the module's
+own csync and syncs), and the video-type selector maps their modes (3–4,
+5–9) to RGBS, so RGBS, RGsB and YPbPr take exactly the paths they did. With
+both at 1 the file builds exactly RndMnkIII's 1.4: the change only adds the
+parameters, the generate blocks around the three instances and the
+selector. `pocket_analogizer` forwards both as parameters of its own
+(default 1), and `core_top` sets both to 0.
+
+The Y/C encoder's subcarrier step and colour-burst window, which the wrapper
+still computes, are integers from `CLK_HZ`. The reals used elsewhere lose
+the bits past 32 in some tools, and MSX2's hand-typed NTSC step is a few
+counts off.
 
 ### Using SNAC in the game's inputs
 
@@ -259,47 +281,62 @@ place of `cont1..4_key`. **Wherever a core reads `cont*_key` directly**
   - With the menu at its defaults, every pin sits as on a core without the
     adapter, and the controller words pass through.
   - Every option of every Analogizer entry in the package's `interact.json`
-    (32), set as the firmware sets a masked entry, read back the word as the
+    (25), set as the firmware sets a masked entry, read back the word as the
     bridge samples it, merged and written: the word, the adapter's copy and
     the enable each followed. With the adapter's own read-back in place of
     the wrapper's, the same run fails at the second entry.
   - RGBS: all 122,880 visible dots of a frame (512 × 240) reach the DAC
     pins, in raster order, each exactly four clocks, as their top six bits
     per channel, with 0 differing. Csync is one 38-dot pulse a line.
-  - Scandoubler: 524 lines per frame (twice 262) at 1268 clocks, half the
-    board's 2,536-clock line; the frame 664,432 clocks, the board's.
-  - YPbPr and Y/C NTSC/PAL: no unknown on any pin for a frame.
+  - Scandoubler and Y/C, as built here (left out): each of their seven
+    mode values shows RGBS, all 122,880 dots with 0 differing. With both
+    built (the first version of this branch) the scandoubler made 524 lines
+    per frame (twice 262) at 1268 clocks, half the board's 2,536-clock
+    line, and Y/C ran without an unknown pin.
+  - YPbPr: no unknown on any pin for a frame.
   - All six SNAC assignments, the analog stick, and type "none" map as
     tabled.
   - Position, at both ends of the shipped sliders: read back as written,
     the settings word untouched; at the pins csync moves by exactly the
     dots (in clocks) and lines asked, the picture is still every dot with
-    0 differing, csync is never low while a dot is drawn, and the
-    scandoubler's lines and period are unchanged; back at 0, csync is
+    0 differing, csync is never low while a dot is drawn; back at 0, csync is
     where it started (+12,+3: csync to picture 488 clocks from 440, 22
     lines from 19; -32,-15: 312 clocks, 4 lines). One step past either end
     (+13 dots and +4 lines, or -16 lines) fails it. A jump written just
     after a pulse that puts the next right after it (V +3 to -2, H +12 to
-    -27) leaves csync out of the picture for three frames.
+    -27), or a step back to 0 (V +3 to 0, H +12 to 0), leaves csync out of
+    the picture for three frames.
   - The blank bit, and enable off again returning the port to idle.
-- `sim/lint.sh`: `ana_retime` and the wrapper lint clean. The vendored
-  files' warnings are dropped by path; their errors are not.
+- `sim/lint.sh`: `ana_retime` and the wrapper lint clean, at the module's
+  defaults and with `USE_YC = 0`, `USE_SD = 0`. The vendored files'
+  warnings are dropped by path; their errors are not.
 - `sim/run_video.sh`: the frozen-state video gate, unchanged (nothing under
   `rtl/` changed): 13 states, 0 differing pixels.
-- Quartus 18.1: **does not fit.** The fitter needs 1,900 LABs and the
-  5CEBA4 has 1,848: 18,788 ALMs needed of 18,480. The released build is
-  16,568 (90 %, already with `OPTIMIZATION_MODE "AGGRESSIVE AREA"`); the
-  Analogizer path adds 1,818 -- the wrapper 292 of its own, the adapter
-  module 1,490 (scandoubler 143 + HQ2x 599, Y/C 246, SNAC 288 with PSX 73,
-  YPbPr 104, its top level 51), and the re-timer 36 (and one block RAM).
-  Nothing here is timed yet: the fit stopped before timing analysis. To
-  fit with the margin the 0.2.0 build closed timing at (96 %), about 1,050
-  ALMs have to go; the candidates are the adapter's own modes (HQ2x and
-  the scandoubler, Y/C), which means a local change to the vendored module
-  or to which of its parts the wrapper builds -- a decision for the core's
-  owner, not made here.
+- Quartus 18.1, as built here (no Y/C, no scandoubler): **17,406 ALMs of
+  18,480 (94 %)**, 224 of 308 RAM blocks, 14 DSP, against the released
+  16,568 (90 %), 221 and 14. No negative slack at any corner: setup on the
+  96 MHz clock +0.301 ns (slow 85C) / +0.436 (slow 0C), the SDRAM address
+  outputs +0.008 ns (slow 85C, `dram_a[2]`; the released build had +0.015
+  on the same kind of path) / +0.326 (slow 0C), SDRAM read capture setup
+  +1.02 / hold +0.47 (fast 0C), worst hold anywhere +0.119 ns (fast 0C);
+  the Analogizer's own clock has 10.9 ns of setup. Every constraint in
+  `stunrun_pocket.sdc` applies; the four filters that match nothing
+  (`dbg_instr`, `force_pend`, `ic_lu_en` in the GSP's multicycle
+  exclusions, registers synthesis removes) did so in the released build too.
+  - The full module needed 18,788 ALMs, 102 %, and did not fit: the
+    wrapper 292 of its own, the adapter module 1,490 (scandoubler 143 +
+    HQ2x 599, Y/C 246, SNAC 288 with PSX 73, YPbPr 104, its top level 51),
+    the re-timer 36. Leaving out Y/C and the scandoubler saved about 1,380.
+  - **The SDRAM clock moved.** The first fitting build missed the SDRAM
+    address outputs' setup to the chip clock by 0.334 ns (slow 85C) and the
+    read capture's hold by 0.046 ns (fast 0C). Both improve when the chip's
+    clock comes later, and the read capture's setup (+1.54) and the outputs'
+    hold (+3.38) had room, so its phase went from 5859 to 6376 ps (45 to 49
+    VCO steps of 130.1 ps; `core_pll_0002.v`, the SDC's note). The released
+    build's 5859 was confirmed on hardware; 6376 is not yet.
 
-**Not proven:** that it fits (above); anything on hardware with this core (the adapter module itself
+**Not proven:** anything on hardware with this core, including the moved
+SDRAM clock (the adapter module itself
 ships in RndMnkIII's cores and in plasticbugs' MSX2, Moo Mesa, NBA Jam and
 Namco Classic Collection), the re-timer against the real core's stream (the
 bench models `gsp_video`'s output; the system benches do not include

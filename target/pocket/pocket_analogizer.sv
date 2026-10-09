@@ -35,7 +35,13 @@
 module pocket_analogizer #(
     parameter int CLK_HZ   = 48_000_000, // frequency of `clk`
     parameter int LINE_LEN = 512,        // dots per whole line, blanking included
-    parameter int PIX_LAG  = 2           // source clocks from src_pix_ce to a settled pixel
+    parameter int PIX_LAG  = 2,          // source clocks from src_pix_ce to a settled pixel
+    // leave out the adapter module's Y/C encoder, or its scandoubler (with
+    // HQ2x and the VGA scanlines), for a core with no room: their modes then
+    // show RGBS.  A local change to the vendored module (modules/VENDOR.md);
+    // 1, the default, is the module as RndMnkIII wrote it.
+    parameter int USE_YC   = 1,
+    parameter int USE_SD   = 1
 ) (
     input  wire         clk_74a,
     input  wire         clk,             // the Analogizer's clock, and the DAC's
@@ -215,8 +221,18 @@ module pocket_analogizer #(
             end
             else if (o_vcnt != 20'd0) o_vcnt <= o_vcnt - 20'd1;
             else o_vs <= 1'b0;
-            if (dh == 8'sd0) o_hs <= a_hs;
-            if (dv == 8'sd0) o_vs <= a_vs;
+            // At 0 each sync is the source's, under the same off-time rule:
+            // a large slider step to 0 would otherwise put the source's
+            // vsync a line after the last re-made one (found on Time Pilot,
+            // whose vsync is 3 lines and whose large step is 4)
+            if (dh == 8'sd0) begin
+                if (h_rise) o_hs <= o_hs || (o_hgap > hs_len);
+                else if (!a_hs) o_hs <= 1'b0;
+            end
+            if (dv == 8'sd0) begin
+                if (v_rise) o_vs <= o_vs || (o_vgap > vs_len);
+                else if (!a_vs) o_vs <= 1'b0;
+            end
         end
     end
     wire [7:0] b_r = b_pix[27:20], b_g = b_pix[19:12], b_b = b_pix[11:4];
@@ -258,7 +274,8 @@ module pocket_analogizer #(
     wire [31:0] p1_joy, p2_joy;
 
     openFPGA_Pocket_Analogizer #(
-        .MASTER_CLK_FREQ(CLK_HZ), .LINE_LENGTH(LINE_LEN), .ADDRESS_ANALOGIZER_CONFIG(8'hF7)
+        .MASTER_CLK_FREQ(CLK_HZ), .LINE_LENGTH(LINE_LEN), .ADDRESS_ANALOGIZER_CONFIG(8'hF7),
+        .USE_YC(USE_YC), .USE_SD(USE_SD)
     ) u_analogizer (
         .clk_74a(clk_74a), .i_clk(clk), .i_rst_apf(a_rst), .i_rst_core(a_rst),
         .video_clk(clk),

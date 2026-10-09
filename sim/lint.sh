@@ -46,4 +46,13 @@ out=$(verilator --lint-only $FLAGS -Wno-PROCASSWIRE -Wno-UNUSEDSIGNAL -Wno-UNUSE
       | grep -E '^%(Error|Warning)' | grep -v 'Exiting due to' \
       | grep -v -E '^%Warning[^ ]*: [^ ]*(target/pocket/analogizer|platform/pocket)/' || true)
 if [ -n "$out" ]; then echo "$out"; exit 1; fi
+# and as this core builds it: no Y/C encoder, no scandoubler (core_top)
+echo "--- analogizer, USE_YC=0 USE_SD=0 ---"
+out=$(verilator --lint-only $FLAGS -Wno-PROCASSWIRE -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-TIMESCALEMOD \
+      -GUSE_YC=0 -GUSE_SD=0 --top-module pocket_analogizer \
+      target/pocket/pocket_analogizer.sv platform/pocket/helpers/synch_3.sv \
+      $A/*.v $A/*.sv sim/ps2_keyboard_stub.v 2>&1 \
+      | grep -E '^%(Error|Warning)' | grep -v 'Exiting due to' \
+      | grep -v -E '^%Warning[^ ]*: [^ ]*(target/pocket/analogizer|platform/pocket)/' || true)
+if [ -n "$out" ]; then echo "$out"; exit 1; fi
 echo "lint clean"

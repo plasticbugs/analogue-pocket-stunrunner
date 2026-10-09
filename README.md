@@ -72,21 +72,24 @@ MAME with a fresh NVRAM directory) does.
 ## Analogizer
 
 The core supports RndMnkIII's [Analogizer](https://github.com/RndMnkIII/Analogizer)
-cart-slot adapter: the board's own picture out of the VGA port, and SNAC
-controllers in. It is set up in the core's own menu (Analogizer, Analogizer
+cart-slot adapter: the board's own picture out of the VGA port in RGBS,
+RGsB or YPbPr, and SNAC controllers in. It is set up in the core's own menu (Analogizer, Analogizer
 Video, SNAC Adapter, SNAC Assignment, and H and V Position to centre the
 picture on the CRT); with "Analogizer" off, the default, the core is
 unchanged. The core declares a cartridge adapter, so the Pocket powers the
 slot: take any game cartridge out first.
 
 The multisync board's raster is a standard 15 kHz one -- 10 MHz dots, 634 x
-262, 512 x 240 visible, **15.77 kHz / 60.20 Hz** -- so RGBS, RGsB, YPbPr and
-Y/C go to a 15 kHz TV or monitor (SCART, a PVM, a consumer set through a
-Y/C or component input), and the scandoubler modes (31.5 kHz, 60.20 Hz) to a
-VGA monitor. `docs/analogizer.md` has the modes, the controller
-assignments, and what has and has not been checked: the path is proven in
-simulation, but the build does **not yet fit** the Pocket's FPGA with it
-(102 % of the logic), so no bitstream with the Analogizer exists yet.
+262, 512 x 240 visible, **15.77 kHz / 60.20 Hz** -- for a SCART or BNC RGB
+monitor, a PVM, or a set with a component input. **No Y/C and no
+scandoubler:** the game fills 90 % of the FPGA, and the adapter's Y/C
+encoder and scandoubler (with HQ2x) are left out so that it fits; an
+S-Video-only set or a VGA monitor is not supported. `docs/analogizer.md`
+has the modes, the controller assignments, and what has and has not been
+checked: the path is proven in simulation, and no Analogizer has been tried
+with this core yet. To close timing with it, the SDRAM chip's clock phase
+moved from 5859 to 6376 ps: if this build garbles the 3D scenes where 0.2.x
+did not, with or without an adapter, that is the first suspect.
 
 ## Repository layout
 

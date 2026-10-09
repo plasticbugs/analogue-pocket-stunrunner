@@ -6,6 +6,13 @@
 // * 1.2              Added Mike Simon Y/C module, Scandoubler SVGA Mist module.     
 // * 1.3 [11/02/2025] Added Bridge interface to directly access to the Analogizer settings, now returns the settings. Added NES SNAC Zapper support.
 // * 1.4 [20/08/2026] Added PS/2 Keyboard and Mouse support (hook) + NES/SNES/DB15 SNAC game adapter. Needs custom SNAC adapter. Analogizer global enable/disable is read from configuration file.
+//
+// LOCAL CHANGE (plasticbugs' S.T.U.N. Runner core, 2026-10; not upstream):
+// parameters USE_YC and USE_SD, default 1, leave out the Y/C encoder and the
+// scandoubler (with HQ2x and the VGA scanlines) for a core with no room for
+// them.  Off, their outputs are tied to the pass-through values and the
+// video-type selector maps their modes to RGBS.  With both at 1 the module
+// is RndMnkIII's 1.4 unchanged.  modules/VENDOR.md and docs/analogizer.md.
 
 // *** Analogizer R.3 adapter ***
 // * WHEN SOG SWITCH IS IN ON POSITION, OUTPUTS CSYNC ON G CHANNEL
@@ -70,7 +77,8 @@
 `default_nettype none
 `timescale 1ns / 1ps
 
-module openFPGA_Pocket_Analogizer #(parameter MASTER_CLK_FREQ=50_000_000, parameter LINE_LENGTH, parameter ADDRESS_ANALOGIZER_CONFIG=8'hF7) (
+module openFPGA_Pocket_Analogizer #(parameter MASTER_CLK_FREQ=50_000_000, parameter LINE_LENGTH, parameter ADDRESS_ANALOGIZER_CONFIG=8'hF7,
+	parameter USE_YC=1, parameter USE_SD=1) (
 	input  wire clk_74a,
 	input  wire i_clk,
 	input  wire i_rst_apf, //active High
@@ -338,8 +346,12 @@ end
 	wire Hblank_Sd, Vblank_Sd ;
 	wire BLANKn_SD = ~(Hblank_Sd || Vblank_Sd) ;
 
+	// LOCAL: a mode whose part is left out (USE_YC, USE_SD) is shown as RGBS
+	wire [3:0] video_type_sel = ((USE_YC == 0) && (analogizer_video_type == 4'h3 || analogizer_video_type == 4'h4)) ||
+	                            ((USE_SD == 0) && (analogizer_video_type >= 4'h5 && analogizer_video_type <= 4'h9))
+	                            ? 4'h0 : analogizer_video_type;
 	always @(*) begin
-		case(analogizer_video_type)
+		case(video_type_sel)
 			4'h0: begin //RGBS
 				Rout = R_fix[7:2]&{6{ANALOGIZER_DE}};
 				Gout = G_fix[7:2]&{6{ANALOGIZER_DE}};
@@ -408,6 +420,7 @@ end
 	//wire yc_hs, yc_vs, 
 	wire yc_cs ;
 
+	generate if (USE_YC != 0) begin : g_yc	// LOCAL
 	yc_out_legacy yc_out
 	(
 		.clk(i_clk),
@@ -426,8 +439,13 @@ end
 		.vsync_o(),
 		.csync_o(yc_cs) //24bits output
 	);
+	end else begin : g_no_yc			// LOCAL: no encoder
+	assign yc_o  = 24'h0;
+	assign yc_cs = ANALOGIZER_CSYNC;
+	end endgenerate
 
 	wire ce_pix_Sd ;
+	generate if (USE_SD != 0) begin : g_sd	// LOCAL
 	scandoubler_2 #(.LENGTH(LINE_LENGTH), .HALF_DEPTH(0)) sd
 	(
 		.clk_vid(i_clk),
@@ -451,6 +469,16 @@ end
 		.g_out(G_Sd),
 		.b_out(B_Sd)
 	);
+	end else begin : g_no_sd			// LOCAL: no scandoubler, no HQ2x
+	assign ce_pix_Sd = CE;
+	assign Hsync_Sd  = HS;
+	assign Vsync_Sd  = VS;
+	assign Hblank_Sd = HBL;
+	assign Vblank_Sd = VBL;
+	assign R_Sd = 8'h0;
+	assign G_Sd = 8'h0;
+	assign B_Sd = 8'h0;
+	end endgenerate
 
 	reg Hsync_SL, Vsync_SL, Hblank_SL, Vblank_SL ;
 	reg [7:0] R_SL, G_SL, B_SL ;
@@ -471,6 +499,7 @@ end
 
 wire [23:0] vga_data_sl ;
 wire        vga_vs_sl, vga_hs_sl ;
+generate if (USE_SD != 0) begin : g_sl		// LOCAL
 scanlines_analogizer #(0) VGA_scanlines
 (
 	.clk(video_clk),
@@ -489,6 +518,11 @@ scanlines_analogizer #(0) VGA_scanlines
 	.de_out(),
 	.ce_out()
 );
+end else begin : g_no_sl				// LOCAL: no scandoubler, no scanlines
+assign vga_data_sl = 24'h0;
+assign vga_hs_sl   = HS;
+assign vga_vs_sl   = VS;
+end endgenerate
 
 
 	//infer tri-state buffers for cartridge data signals
