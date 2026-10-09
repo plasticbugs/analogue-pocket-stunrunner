@@ -8,7 +8,16 @@ ROMPATH=${ROMPATH:-.}
 FRAMES=${FRAMES:-600,1000,1500,2400}
 W=$(mktemp -d)
 mkdir -p artifacts/states artifacts/snap "$W/cfg" "$W/nvram"
-OUTDIR=artifacts/states FRAMES="$FRAMES" mame stunrun -rompath "$ROMPATH" -video none -sound none -nothrottle \
+# Headless: MAME must never take the display.  Its defaults are fullscreen,
+# which on macOS moves the desktop to a new Space; SDL_VIDEODRIVER=dummy keeps
+# SDL off the display, -videodriver dummy says so to MAME, and -window
+# -nomaximize keeps any window that is made anyway small.  -seconds_to_run is
+# the backstop if the script does not end the run: the last frame, at 60.2 Hz,
+# and ten seconds more.
+LAST=$(echo "$FRAMES" | tr ',' '\n' | sort -n | tail -1)
+SDL_VIDEODRIVER=dummy OUTDIR=artifacts/states FRAMES="$FRAMES" mame stunrun -rompath "$ROMPATH" \
+    -video none -videodriver dummy -window -nomaximize -sound none -nothrottle \
+    -seconds_to_run $((LAST / 60 + 10)) \
     -skip_gameinfo -cfg_directory "$W/cfg" -nvram_directory "$W/nvram" -snapshot_directory "$W/snap" \
     -autoboot_script tools/dumpstate.lua >/dev/null 2>&1
 i=0

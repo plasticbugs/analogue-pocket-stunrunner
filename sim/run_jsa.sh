@@ -17,8 +17,11 @@ mkdir -p "$OUT/main" build/jsa build/cfg_m
 
 if [ ! -f "$OUT/main/events.txt" ] || [ ! -f "$OUT/main/mame.wav" ]; then
     echo "--- capturing MAME reference (events + audio) ---"
-    TAPS=all FRAMES=3000 OUT="$OUT/main" mame stunrun -rompath "$PWD/$ROM" -video none -sound none \
-        -nothrottle -skip_gameinfo -cfg_directory build/cfg_m -nvram_directory build/cfg_m \
+    # headless (MAME's fullscreen default moves the macOS desktop to a new
+    # Space): no display at all, and -seconds_to_run as the backstop
+    SDL_VIDEODRIVER=dummy TAPS=all FRAMES=3000 OUT="$OUT/main" mame stunrun -rompath "$PWD/$ROM" \
+        -video none -videodriver dummy -window -nomaximize -sound none \
+        -seconds_to_run 60 -nothrottle -skip_gameinfo -cfg_directory build/cfg_m -nvram_directory build/cfg_m \
         -wavwrite "$OUT/main/mame.wav" -autoboot_script tools/trace_jsa.lua > "$OUT/main/log.txt" 2>&1
 fi
 
