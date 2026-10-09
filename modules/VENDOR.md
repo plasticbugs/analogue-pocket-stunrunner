@@ -14,3 +14,16 @@ LICENSE files are kept alongside the sources.
 
 To update one: re-copy from upstream at the new commit (do not add it as a
 submodule) and record the commit here.
+
+## The Analogizer adapter module
+
+| module | upstream | commit | licence |
+|---|---|---|---|
+| `target/pocket/analogizer/` | RndMnkIII's Analogizer adapter module (`openFPGA_Pocket_Analogizer` 1.4) and the 14 files it instantiates, verbatim; `analogizer.qip` is ours | https://github.com/RndMnkIII/MiraxPocket, `src/fpga/analogizer/` | 9dfdd2b9bec79fe5ea10e154a0613a0c9d4fe37f | GPL-3.0-or-later; `hq2x.sv`, `scandoubler_2.v`, `yc_out_legacy.sv` carry their own GPL headers |
+
+Copied through plasticbugs' pocket-core-template (d9503cc), with the template's
+wrapper `target/pocket/pocket_analogizer.sv`.  It lives under `target/pocket/`
+rather than `modules/` because it is the Pocket's cartridge port, not the
+machine: `core.qip` includes its own `analogizer.qip`, and `sim/lint.sh` lints
+it behind the wrapper with a stand-in for its one VHDL file
+(`sim/ps2_keyboard_stub.v`).  `docs/analogizer.md` has the rest.

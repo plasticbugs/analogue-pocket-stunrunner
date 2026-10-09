@@ -13,7 +13,8 @@
 # core_pll general[0] = clk_sys       96.0 MHz  machine, renderer, SDRAM
 #          general[1] = clk_vid       24.0 MHz  dot clock, exactly clk_sys / 4
 #          general[2] = clk_vid 90deg 24.0 MHz
-#          general[3], general[4]     unused
+#          general[3] = clk_sdram     96.0 MHz  SDRAM clock, phase-shifted
+#          general[4] = clk_ana       40.0 MHz  the Analogizer, 4x the board's dot
 #
 # clk_sys and the two pixel clocks stay in ONE group on purpose. The renderer
 # emits a pixel every fourth clk_sys cycle and the APF scaler samples it on
@@ -21,6 +22,13 @@
 # synchronous by construction and should be verified rather than cut. Cutting it
 # would let each build route it blind and make the picture depend on the fitter
 # seed.
+#
+# clk_ana is in a group of its own.  It is the same PLL, but the Analogizer's
+# side (target/pocket/ana_retime.sv) takes the Pocket's stream through a
+# dual-clock line RAM and two-flop synchronisers only, and the Analogizer's
+# controller and settings words cross to clk_74a through synchronisers: 40
+# and 96 MHz edges come within 1 ns of each other, a requirement no path
+# here needs or could meet.
 #
 # clk_74a, clk_74b, the bridge SPI clock and the audio PLL are genuinely
 # asynchronous to the machine. The one multi-bit bus that crosses into clk_74b
@@ -35,8 +43,8 @@ set_clock_groups -asynchronous \
  -group { ic|core_pll|core_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk \
           ic|core_pll|core_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk \
           ic|core_pll|core_pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk \
-          ic|core_pll|core_pll_inst|altera_pll_i|general[3].gpll~PLL_OUTPUT_COUNTER|divclk \
-          ic|core_pll|core_pll_inst|altera_pll_i|general[4].gpll~PLL_OUTPUT_COUNTER|divclk } \
+          ic|core_pll|core_pll_inst|altera_pll_i|general[3].gpll~PLL_OUTPUT_COUNTER|divclk } \
+ -group { ic|core_pll|core_pll_inst|altera_pll_i|general[4].gpll~PLL_OUTPUT_COUNTER|divclk } \
  -group { ic|pocket_audio_mixer|audio_pll|mf_audio_pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk } \
  -group { ic|pocket_audio_mixer|audio_pll|mf_audio_pll_inst|altera_pll_i|general[1].gpll~PLL_OUTPUT_COUNTER|divclk }
 

@@ -69,6 +69,25 @@ no save file takes about seven seconds longer than usual: the game
 initialises its EEPROM records byte by byte, exactly as the real board (and
 MAME with a fresh NVRAM directory) does.
 
+## Analogizer
+
+The core supports RndMnkIII's [Analogizer](https://github.com/RndMnkIII/Analogizer)
+cart-slot adapter: the board's own picture out of the VGA port, and SNAC
+controllers in. It is set up in the core's own menu (Analogizer, Analogizer
+Video, SNAC Adapter, SNAC Assignment, and H and V Position to centre the
+picture on the CRT); with "Analogizer" off, the default, the core is
+unchanged. The core declares a cartridge adapter, so the Pocket powers the
+slot: take any game cartridge out first.
+
+The multisync board's raster is a standard 15 kHz one -- 10 MHz dots, 634 x
+262, 512 x 240 visible, **15.77 kHz / 60.20 Hz** -- so RGBS, RGsB, YPbPr and
+Y/C go to a 15 kHz TV or monitor (SCART, a PVM, a consumer set through a
+Y/C or component input), and the scandoubler modes (31.5 kHz, 60.20 Hz) to a
+VGA monitor. `docs/analogizer.md` has the modes, the controller
+assignments, and what has and has not been checked: the path is proven in
+simulation, but the build does **not yet fit** the Pocket's FPGA with it
+(102 % of the logic), so no bitstream with the Analogizer exists yet.
+
 ## Repository layout
 
 | Path | What |
@@ -123,6 +142,14 @@ rest of the core is built on other people's work.
 * the SDRAM controller's pin-level timing — CL2, read data captured at
   READ+4, proven on the Pocket at 96 MHz — is carried over from the
   Punch-Out!! core's `sdram16.sv` (`rtl/sdram_ctrl.sv`)
+
+**Analogizer**
+
+* **RndMnkIII** — the [Analogizer](https://github.com/RndMnkIII/Analogizer)
+  adapter and its openFPGA module (`target/pocket/analogizer/`, see
+  `modules/VENDOR.md`), with the code it carries: **Mike Simone**'s Y/C
+  encoder, **Sorgelig**'s scandoubler and **Ludvig Strigeus**' HQ2x from
+  MiSTer, and the SNAC controller readers it credits
 
 **Reference & verification**
 
