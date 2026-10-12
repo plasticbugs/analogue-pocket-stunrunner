@@ -86,8 +86,7 @@ scandoubler:** the game fills 90 % of the FPGA, and the adapter's Y/C
 encoder and scandoubler (with HQ2x) are left out so that it fits; an
 S-Video-only set or a VGA monitor is not supported. `docs/analogizer.md`
 has the modes, the controller assignments, and what has and has not been
-checked: the path is proven in simulation, and no Analogizer has been tried
-with this core yet. To close timing with it, the SDRAM chip's clock phase
+checked. Confirmed on a Pocket with an Analogizer and a CRT (0.3.0). To close timing with it, the SDRAM chip's clock phase
 moved from 5859 to 6376 ps: if this build garbles the 3D scenes where 0.2.x
 did not, with or without an adapter, that is the first suspect.
 
